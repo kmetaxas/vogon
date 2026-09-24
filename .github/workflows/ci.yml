@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Generate gRPC stubs
+        run: uv run python -m grpc_tools.protoc --proto_path=proto --python_out=. --grpc_python_out=. proto/marvin.proto
+
+      - name: Run tests
+        env:
+          DJANGO_SETTINGS_MODULE: vogon.test_settings
+        run: uv run pytest
+
+      - name: Run linting
+        run: uv run ruff check .
+
+      - name: Run formatting check
+        run: uv run black --check .
+
+      - name: Run type checking
+        run: uv run mypy .
