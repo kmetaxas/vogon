@@ -5,7 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.mail import send_mail
 from django.db import transaction
-from django.http import HttpResponseForbidden, HttpResponseRedirect
+from django.http import HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -17,7 +17,6 @@ from apps.core.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    User,
 )
 from apps.sessions.models import TSession
 
@@ -165,7 +164,8 @@ class OrganizationSetupView(LoginRequiredMixin, View):
             if user_domain != org.email_domain.lower():
                 messages.error(
                     request,
-                    f"Only users with an @{org.email_domain} email address can join this organization.",
+                    f"Only users with an @{org.email_domain} email address "
+                    "can join this organization.",
                 )
                 return render(request, "core/org_setup.html", {"tab": "join", "code": code})
 
@@ -260,12 +260,13 @@ class OrganizationInviteView(OrganizationRequiredMixin, View):
             if invited_domain != self.organization.email_domain.lower():
                 messages.error(
                     request,
-                    f"Only users with an @{self.organization.email_domain} email address can be invited.",
+                    f"Only users with an @{self.organization.email_domain} "
+                    "email address can be invited.",
                 )
                 return redirect("core:org-detail")
 
         code = secrets.token_urlsafe(32)
-        invitation = OrganizationInvitation.objects.create(
+        OrganizationInvitation.objects.create(
             organization=self.organization,
             email=email,
             code=code,
@@ -276,7 +277,8 @@ class OrganizationInviteView(OrganizationRequiredMixin, View):
         subject = f"You've been invited to join {self.organization.name} on Vogon"
         body = (
             f"Hi,\n\n"
-            f"{request.user.username} has invited you to join {self.organization.name} on Vogon.\n\n"
+            f"{request.user.username} has invited you to join "
+            f"{self.organization.name} on Vogon.\n\n"
             f"Click here to accept: {invite_url}\n\n"
             f"Your invitation code: {code}\n\n"
             f"If you don't have an account yet, sign up first and then use the link above.\n"

@@ -6,8 +6,9 @@ import asyncio
 import logging
 import math
 from collections import Counter, OrderedDict, defaultdict
+from collections.abc import Iterable
 from datetime import timedelta
-from typing import Any, Iterable, cast
+from typing import Any, cast
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -31,19 +32,19 @@ class DiscoveryError(Exception):
     """Base exception for discovery and target-resolution failures."""
 
 
-class CapabilityNotFound(DiscoveryError):
+class CapabilityNotFound(DiscoveryError):  # noqa: N818
     """Raised when a requested capability is missing, disabled, or out of scope."""
 
 
-class FanOutLimitExceeded(DiscoveryError):
+class FanOutLimitExceeded(DiscoveryError):  # noqa: N818
     """Raised when target resolution exceeds a hard execution-policy limit."""
 
 
-class BudgetExceeded(DiscoveryError):
+class BudgetExceeded(DiscoveryError):  # noqa: N818
     """Raised when a session budget cannot reserve another execution."""
 
 
-class SelectorRequiresResource(DiscoveryError):
+class SelectorRequiresResource(DiscoveryError):  # noqa: N818
     """Raised when resource-scoped resolution cannot identify any resource targets."""
 
 

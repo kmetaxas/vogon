@@ -412,8 +412,8 @@ class ThreadSendMessageView(OrganizationRequiredMixin, View):
             # Extract design references like [design:<uuid>]
             import re
 
-            DESIGN_REF_RE = re.compile(r"\[design:([0-9a-f\-]{36})\]")
-            design_ids = DESIGN_REF_RE.findall(content)
+            design_ref_re = re.compile(r"\[design:([0-9a-f\-]{36})\]")
+            design_ids = design_ref_re.findall(content)
             references = []
             if design_ids:
                 from apps.infradesigns.models import InfrastructureDesign
@@ -431,7 +431,7 @@ class ThreadSendMessageView(OrganizationRequiredMixin, View):
                             "environment": d.environment,
                         }
                     )
-                content = DESIGN_REF_RE.sub("", content).strip()
+                content = design_ref_re.sub("", content).strip()
 
             Message.objects.create(
                 thread=thread,

@@ -38,14 +38,16 @@ def encrypt(value: str) -> str:
     """Encrypt a plaintext string, return base64 ciphertext."""
     if not value:
         return value
-    return _fernet().encrypt(value.encode()).decode()
+    result: str = _fernet().encrypt(value.encode()).decode()
+    return result
 
 
 def decrypt(value: str) -> str:
     """Decrypt a base64 ciphertext string, return plaintext."""
     if not value:
         return value
-    return _fernet().decrypt(value.encode()).decode()
+    result: str = _fernet().decrypt(value.encode()).decode()
+    return result
 
 
 def maybe_decrypt(value: str) -> str:
@@ -56,6 +58,7 @@ def maybe_decrypt(value: str) -> str:
     if not value:
         return value
     try:
-        return _fernet().decrypt(value.encode()).decode()
+        result: str = _fernet().decrypt(value.encode()).decode()
+        return result
     except Exception:
         return value

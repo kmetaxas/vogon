@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from django.db.models.expressions import F  # noqa: F401
 from django.db.transaction import atomic
 from pydantic import BaseModel, Field
 
-DEFAULT_EXECUTION_BUDGET: Dict[str, Any] = {
+DEFAULT_EXECUTION_BUDGET: dict[str, Any] = {
     "max_executions_per_session": 100,
     "max_targets_per_session": 200,
     "max_concurrent_executions": 5,
@@ -33,21 +33,21 @@ class SessionBudget(BaseModel):
     concurrent_running: int = Field(default=0, ge=0)
 
     @classmethod
-    def from_session(cls, session: Any) -> "SessionBudget":
+    def from_session(cls, session: Any) -> SessionBudget:
         """Build a :class:`SessionBudget` from a ``TSession`` instance.
 
         Reads ``session.execution_budget`` (a dict or None). If it is empty or
         missing, defaults are used.
         """
-        budget: Dict[str, Any] = session.execution_budget or {}
+        budget: dict[str, Any] = session.execution_budget or {}
         return cls(**budget)
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> dict[str, int]:
         """Return a plain dict suitable for saving to the JSONField."""
         return self.model_dump()
 
 
-class BudgetExceeded(Exception):
+class BudgetExceeded(Exception):  # noqa: N818
     pass
 
 

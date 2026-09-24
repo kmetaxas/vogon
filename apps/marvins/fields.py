@@ -21,7 +21,7 @@ class VectorField(Field):
         self.dimensions = dimensions
         super().__init__(*args, **kwargs)
 
-    def deconstruct(self) -> tuple[str, str, list[Any], dict[str, Any]]:
+    def deconstruct(self):
         name, path, args, kwargs = super().deconstruct()
         if self.dimensions is not None:
             kwargs["dimensions"] = self.dimensions
@@ -55,7 +55,7 @@ class VectorField(Field):
             value = value.strip()
             if not value:
                 return None
-            return value
+            return str(value)
         return "[" + ",".join(str(float(part)) for part in value) + "]"
 
     def value_to_string(self, obj: Any) -> str:

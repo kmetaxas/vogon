@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any
 

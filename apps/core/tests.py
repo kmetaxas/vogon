@@ -207,7 +207,7 @@ class OrganizationSetupViewTests(TestCase):
         OrganizationMembership.objects.create(
             user=owner, organization=org, role=OrganizationMembership.Role.OWNER
         )
-        invitation = OrganizationInvitation.objects.create(
+        OrganizationInvitation.objects.create(
             organization=org, email="alice@example.com", code="abc123"
         )
         user = User.objects.create_user(username="bob", password="pass", email="bob@example.com")
@@ -225,7 +225,7 @@ class OrganizationSetupViewTests(TestCase):
         OrganizationMembership.objects.create(
             user=owner, organization=org, role=OrganizationMembership.Role.OWNER
         )
-        invitation = OrganizationInvitation.objects.create(
+        OrganizationInvitation.objects.create(
             organization=org, email="alice@acme.com", code="abc123"
         )
         user = User.objects.create_user(username="alice", password="pass", email="alice@other.com")
@@ -243,7 +243,7 @@ class OrganizationSetupViewTests(TestCase):
         OrganizationMembership.objects.create(
             user=owner, organization=org, role=OrganizationMembership.Role.OWNER
         )
-        invitation = OrganizationInvitation.objects.create(
+        OrganizationInvitation.objects.create(
             organization=org, email="alice@acme.com", code="abc123"
         )
         user = User.objects.create_user(username="alice", password="pass", email="alice@acme.com")

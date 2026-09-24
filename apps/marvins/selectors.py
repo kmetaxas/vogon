@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Union
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -11,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 # A single label value: a list of allowed values, a scalar, or an explicit
 # "any" marker (None means no filtering on this label).
-_LabelValue = Union[List[str], str, None]
+_LabelValue = list[str] | str | None
 
 
-def _to_list(value: _LabelValue) -> List[str]:
+def _to_list(value: _LabelValue) -> list[str]:
     """Normalize a label value to a list; ``None`` (any) yields an empty list."""
     if value is None:
         return []
@@ -33,26 +34,26 @@ class TargetSelector(BaseModel):
 
     model_config = {"extra": "ignore"}
 
-    hostname: Optional[List[str]] = Field(default=None, description="Allowed hostnames.")
-    region: Optional[List[str]] = Field(default=None, description="Allowed regions.")
-    availability_zone: Optional[List[str]] = Field(
+    hostname: list[str] | None = Field(default=None, description="Allowed hostnames.")
+    region: list[str] | None = Field(default=None, description="Allowed regions.")
+    availability_zone: list[str] | None = Field(
         default=None, description="Allowed availability zones."
     )
-    provider: Optional[List[str]] = Field(
+    provider: list[str] | None = Field(
         default=None, description="Allowed infrastructure providers."
     )
-    labels: Optional[Dict[str, _LabelValue]] = Field(
+    labels: dict[str, _LabelValue] | None = Field(
         default=None, description="Label key/value constraints."
     )
-    resource_ids: Optional[List[str]] = Field(
+    resource_ids: list[str] | None = Field(
         default=None, description="Allowed resource identifiers."
     )
-    marvin_ids: Optional[List[str]] = Field(
+    marvin_ids: list[str] | None = Field(
         default=None, description="Allowed Marvin agent identifiers."
     )
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TargetSelector":
+    def from_dict(cls, data: Mapping[str, Any]) -> TargetSelector:
         """Build a TargetSelector from an arbitrary dict.
 
         Unknown keys are dropped (and logged as a warning); known ``None``
@@ -61,7 +62,7 @@ class TargetSelector(BaseModel):
         if not data:
             return cls()
         known = set(cls.model_fields)
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
         for key, value in data.items():
             if key in known:
                 payload[key] = value
@@ -69,11 +70,11 @@ class TargetSelector(BaseModel):
                 logger.warning("Ignoring unknown TargetSelector key %r", key)
         return cls(**payload)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a plain dict, omitting fields whose value is ``None``."""
         return {key: value for key, value in self.model_dump().items() if value is not None}
 
-    def merge_with(self, other: "TargetSelector") -> "TargetSelector":
+    def merge_with(self, other: TargetSelector) -> TargetSelector:
         """Combine with another selector using AND semantics.
 
         For keys present (non-``None``) on *both* sides, list values are
@@ -96,15 +97,15 @@ class TargetSelector(BaseModel):
 
     @staticmethod
     def _merge_labels(
-        own: Dict[str, _LabelValue], other: Dict[str, _LabelValue]
-    ) -> Dict[str, _LabelValue]:
+        own: dict[str, _LabelValue], other: dict[str, _LabelValue]
+    ) -> dict[str, _LabelValue]:
         """Merge two label maps using AND semantics per label key.
 
         Each value is normalized to a list (``None`` means "any"). When both
         sides constrain the same label, the lists are intersected. A scalar
         (``str``) is treated as a single-element list.
         """
-        merged: Dict[str, _LabelValue] = {}
+        merged: dict[str, _LabelValue] = {}
         all_keys = set(own) | set(other)
         for key in all_keys:
             own_value = own.get(key)

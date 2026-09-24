@@ -1,15 +1,19 @@
-from services.llm.base import ToolSpec
 from django.conf import settings
+
+from services.llm.base import ToolSpec
 
 _TOOL_SPECS = [
     ToolSpec(
         name="find_tools",
         description=(
-            "Discover troubleshooting capabilities (tools) available on Marvin agents. "
-            "Supports natural-language and semantic queries (e.g., 'why is this Kafka consumer falling behind?') "
-            "as well as keyword searches. Use free text, filter by label selector, or look up an exact name. "
-            "Call this BEFORE execute_tool to find the right capability and its parameters. "
-            "Only returns capabilities backed by at least one online Marvin."
+            "Discover troubleshooting capabilities (tools) "
+            "available on Marvin agents. Supports natural-language "
+            "and semantic queries (e.g., 'why is this Kafka consumer "
+            "falling behind?') as well as keyword searches. Use free "
+            "text, filter by label selector, or look up an exact name. "
+            "Call this BEFORE execute_tool to find the right capability "
+            "and its parameters. Only returns capabilities backed by "
+            "at least one online Marvin."
         ),
         parameters={
             "type": "object",
@@ -17,20 +21,25 @@ _TOOL_SPECS = [
                 "query": {
                     "type": "string",
                     "description": (
-                        "Natural-language or keyword search over capability name, description, and keywords. "
-                        "You may describe the problem in plain English (e.g., 'high CPU on a pod', 'disk full warnings') "
-                        "or use exact technical terms (e.g., 'kubernetes.pod.logs')."
+                        "Natural-language or keyword search over "
+                        "capability name, description, and keywords. "
+                        "You may describe the problem in plain English "
+                        "(e.g., 'high CPU on a pod', 'disk full warnings') "
+                        "or use exact technical terms "
+                        "(e.g., 'kubernetes.pod.logs')."
                     ),
                 },
                 "labels": {
                     "type": "string",
                     "description": (
-                        "Label selector to filter which Marvin agents can execute this tool. "
-                        "Labels are key:value pairs separated by commas. "
-                        "Use a colon (:) not equals (=). "
-                        "Examples: 'env:development' or 'env:production,team:platform'. "
-                        "You can only match actual labels set on Marvins (e.g. env, team, cluster). "
-                        "You CANNOT use metadata fields like client_id, hostname, provider, or region as labels. "
+                        "Label selector to filter which Marvin agents "
+                        "can execute this tool. Labels are key:value pairs "
+                        "separated by commas. Use a colon (:) not equals (=). "
+                        "Examples: 'env:development' or "
+                        "'env:production,team:platform'. You can only match "
+                        "actual labels set on Marvins (e.g. env, team, "
+                        "cluster). You CANNOT use metadata fields like "
+                        "client_id, hostname, provider, or region as labels. "
                         "Omit to target all online Marvins with this capability."
                     ),
                 },
@@ -51,8 +60,9 @@ _TOOL_SPECS = [
     ToolSpec(
         name="execute_tool",
         description=(
-            "Execute a capability on a Marvin agent. Route to the correct Dave(s) using a "
-            "label selector. Use find_tools first to discover the capability name and schema."
+            "Execute a capability on a Marvin agent. Route to "
+            "the correct Dave(s) using a label selector. Use "
+            "find_tools first to discover the capability name and schema."
         ),
         parameters={
             "type": "object",
@@ -65,9 +75,11 @@ _TOOL_SPECS = [
                         "Label selector to filter Marvin agents. "
                         "Labels are key:value pairs separated by commas. "
                         "Use a colon (:) not equals (=). "
-                        "Examples: 'env:development' or 'env:production,team:platform'. "
-                        "You can only match actual labels set on Marvins (e.g. env, team, cluster). "
-                        "You CANNOT use metadata fields like client_id, hostname, provider, or region as labels. "
+                        "Examples: 'env:development' or "
+                        "'env:production,team:platform'. You can only match "
+                        "actual labels set on Marvins (e.g. env, team, "
+                        "cluster). You CANNOT use metadata fields like "
+                        "client_id, hostname, provider, or region as labels. "
                         "Omit to search across all online Marvins."
                     ),
                 },
@@ -79,8 +91,9 @@ _TOOL_SPECS = [
     ToolSpec(
         name="request_architecture_design",
         description=(
-            "Request a human to upload an architecture diagram or markdown. "
-            "Use when the investigation needs system design context."
+            "Request a human to upload an architecture "
+            "diagram or markdown. Use when the investigation "
+            "needs system design context."
         ),
         parameters={
             "type": "object",

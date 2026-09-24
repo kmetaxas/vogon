@@ -48,7 +48,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"      description: {cap.description}")
 
         # Analysis
-        self.stdout.write(f"\nAnalysis:")
+        self.stdout.write("\nAnalysis:")
         online_marvins = marvins.filter(status=Marvin.Status.ONLINE)
         if online_marvins.count() == 0:
             self.stdout.write("   FAIL: No Marvins are ONLINE. find_tools will return empty.")

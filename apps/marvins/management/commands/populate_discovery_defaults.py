@@ -1,4 +1,5 @@
 import logging
+
 from django.core.management.base import BaseCommand
 
 from apps.marvins.models import Capability, ResourceType

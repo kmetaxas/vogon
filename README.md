@@ -50,7 +50,9 @@ Vogon provides a centralized platform for running AI-assisted troubleshooting wo
 1. **Clone and install dependencies:**
 
    ```bash
-   pip install -e ".[dev]"
+   uv venv --extra dev
+   source .venv/bin/activate
+   uv sync
    ```
 
 2. **Set up environment variables** (copy `.env.example` to `.env` and fill in):
@@ -138,9 +140,9 @@ python -m services.temporal_workers.main  # Temporal workers
 ### Testing
 
 ```bash
-pytest                              # Run all tests
-pytest apps/core/tests.py          # Core app tests
-pytest apps/sessions/tests.py -k test_send_message  # Specific test
+uv run pytest                              # Run all tests
+uv run pytest apps/core/tests.py          # Core app tests
+uv run pytest apps/sessions/tests.py -k test_send_message  # Specific test
 ```
 
 Tests use `pytest-django` and mock Temporal workflows (no running server required).

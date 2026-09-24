@@ -1,6 +1,5 @@
 from django.shortcuts import redirect
 
-
 EXEMPT_PATHS = {
     "/accounts/",
     "/admin/",

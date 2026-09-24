@@ -152,7 +152,7 @@ class Command(BaseCommand):
             )
             self.stdout.write("")
             self.stdout.write(f"Result: {json.dumps(result, indent=2)}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.stderr.write(self.style.ERROR("Workflow timed out"))
             raise SystemExit(1)
         except Exception as e:

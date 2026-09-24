@@ -38,9 +38,7 @@ def diagnose_org(org: Organization):
             status_icon = (
                 "🟢"
                 if m.status == Marvin.Status.ONLINE
-                else "🔴"
-                if m.status == Marvin.Status.OFFLINE
-                else "🟡"
+                else "🔴" if m.status == Marvin.Status.OFFLINE else "🟡"
             )
             caps = list(m.capabilities.values_list("name", flat=True))
             print(f"   {status_icon} {m.name}")
@@ -69,7 +67,7 @@ def diagnose_org(org: Organization):
             print(f"      keywords: {cap.keywords}")
 
     # Analysis
-    print(f"\n🔍 Analysis:")
+    print("\n🔍 Analysis:")
 
     online_marvins = marvins.filter(status=Marvin.Status.ONLINE)
     if online_marvins.count() == 0:

@@ -7,7 +7,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.utils import timezone
@@ -40,8 +40,8 @@ class MarvinStream:
 
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
-        self.command_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
-        self.response_futures: Dict[str, asyncio.Future] = {}
+        self.command_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.response_futures: dict[str, asyncio.Future] = {}
         self.connected = False
         self.last_seen = datetime.utcnow()
 
@@ -55,7 +55,7 @@ class MarvinStream:
         try:
             result = await asyncio.wait_for(future, timeout=300)
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(f"Command {command_id} timed out")
         finally:
             self.response_futures.pop(command_id, None)
@@ -71,16 +71,16 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
     """gRPC servicer for Marvin agent connections."""
 
     def __init__(self):
-        self.marvins: Dict[str, MarvinStream] = {}
+        self.marvins: dict[str, MarvinStream] = {}
         self._lock = asyncio.Lock()
         self._embedding_tasks: list[asyncio.Task] = []
         self._embedding_poll_task: asyncio.Task | None = None
         _set_active_servicer(self)
 
-    async def Connect(self, request_iterator, context):
+    async def Connect(self, request_iterator, context):  # noqa: N802
         """Handle bi-directional stream connection from Marvin."""
-        agent_id: Optional[str] = None
-        stream: Optional[MarvinStream] = None
+        agent_id: str | None = None
+        stream: MarvinStream | None = None
         message_queue: asyncio.Queue[Any] = asyncio.Queue()
 
         async def _read_messages() -> None:
@@ -94,14 +94,14 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
             while True:
                 try:
                     kind, item = await asyncio.wait_for(message_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if stream is not None:
                         try:
                             command = await asyncio.wait_for(
                                 stream.command_queue.get(), timeout=0.1
                             )
                             yield self._create_control_message(command)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             pass
                     continue
 
@@ -223,7 +223,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                     try:
                         command = await asyncio.wait_for(stream.command_queue.get(), timeout=1.0)
                         yield self._create_control_message(command)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
 
         except Exception as e:
@@ -476,7 +476,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
         except Marvin.DoesNotExist:
             logger.warning(f"Marvin with agent_id {agent_id} not found in database")
 
-    def get_marvin_stream(self, marvin_id: str) -> Optional[MarvinStream]:
+    def get_marvin_stream(self, marvin_id: str) -> MarvinStream | None:
         """Get the stream for a specific Marvin."""
         return self.marvins.get(marvin_id)
 

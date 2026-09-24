@@ -80,7 +80,7 @@ async def execute_capability(
             timeout=300,  # 5 minutes
         )
         return result
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise TimeoutError(f"Capability execution timed out for Marvin {marvin.name}")
 
 
@@ -403,7 +403,7 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
     ]
     try:
         resp = await client.chat(llm_messages, tools=STANDARD_TOOLS)
-    except (APITimeoutError, TimeoutException, asyncio.TimeoutError) as exc:
+    except (TimeoutError, APITimeoutError, TimeoutException) as exc:
         return {
             "content": "",
             "tool_calls": [],

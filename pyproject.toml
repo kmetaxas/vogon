@@ -38,6 +38,7 @@ dev = [
   "black>=24.0",
   "ruff>=0.2",
   "mypy>=1.8",
+  "django-stubs>=4.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -47,12 +48,14 @@ include = ["vogon*", "apps*", "services*"]
 [tool.black]
 line-length = 100
 target-version = ['py311']
+extend-exclude = "(marvin_pb2|marvin_pb2_grpc)\\.py"
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "W", "I", "N", "UP"]
+exclude = ["**/migrations/**", "marvin_pb2*.py", "scripts/", "typings/"]
+
 [tool.ruff.lint]
-select = ["E", "F", "I"] # Ensure 'I' is included for isort
+select = ["E", "F", "I", "N", "UP", "W"]
 
 [tool.pytest.ini_options]
 norecursedirs = ["scripts", ".omo", "designs"]
@@ -66,6 +69,55 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 plugins = ["mypy_django_plugin.main"]
+ignore_missing_imports = true
+
+exclude = [
+    "migrations",
+    "scripts",
+    "marvin_pb2",
+    "typings",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "apps.core.models",
+    "apps.core.admin",
+    "apps.core.tests",
+    "apps.core.middleware",
+    "apps.core.mixins",
+    "apps.core.views",
+    "apps.marvins.models",
+    "apps.marvins.admin",
+    "apps.marvins.auth",
+    "apps.marvins.config_assembly",
+    "apps.marvins.tests",
+    "apps.marvins.fields",
+    "apps.sessions.models",
+    "apps.sessions.admin",
+    "apps.sessions.temporal_utils",
+    "apps.sessions.api_views",
+    "apps.sessions.urls",
+    "apps.llm.models",
+    "apps.llm.admin",
+    "apps.llm.api_views",
+    "apps.infradesigns.models",
+    "apps.infradesigns.admin",
+    "apps.infradesigns.urls",
+    "apps.ws.*",
+    "vogon.urls",
+    "vogon.api_urls",
+    "vogon.asgi",
+    "services.standard_tools.architecture",
+    "services.standard_tools.prometheus",
+    "services.embeddings.generator",
+    "services.mcp_server.auth",
+    "services.mcp_server.server",
+    "services.temporal_workers.workflows",
+    "services.temporal_workers.activities",
+    "services.grpc_server.servicer",
+    "apps.marvins.discovery",
+]
+ignore_errors = true
 
 [tool.django-stubs]
 django_settings_module = "vogon.settings"

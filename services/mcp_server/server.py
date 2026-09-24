@@ -7,8 +7,9 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, cast
+from typing import Any, cast
 
 import django
 from django.conf import settings
@@ -162,10 +163,9 @@ async def find_tools(
 
     Args:
         organization_slug: The slug of the organization
-        query: Natural-language or keyword search over capability name, description, and keywords.
-            You may describe the problem in plain English (e.g., 'high CPU on a pod', 'disk full warnings')
-            or use exact technical terms (e.g., 'kubernetes.pod.logs').
-        labels: Label selector to filter Marvins. Labels are key:value pairs separated by commas. Use a colon (:) not equals (=). Examples: 'env:development' or 'env:production,team:platform'. You can only match actual labels set on Marvins. You CANNOT use metadata fields like client_id, hostname, provider, or region as labels.
+        query: Natural-language or keyword search over capability
+            name, description, and keywords.
+        labels: Label selector to filter Marvins.
         limit: Maximum number of results to return
         capability_name: Exact capability name for direct lookup
         filters: Optional structured filters, e.g. {"providers": ["kafka"], "scopes": ["cluster"]}
@@ -243,7 +243,7 @@ async def execute(
         organization_slug: The slug of the organization
         capability_name: Name of the capability to execute
         parameters: Parameters for the capability as JSON
-        labels: Label selector to filter Marvins. Labels are key:value pairs separated by commas. Use a colon (:) not equals (=). Examples: 'env:development' or 'env:production,team:platform'. You can only match actual labels set on Marvins. You CANNOT use metadata fields like client_id, hostname, provider, or region as labels.
+        labels: Label selector to filter Marvins.
         timeout_seconds: Timeout for the execution in seconds
         session_id: Optional session ID for context
         thread_id: Optional thread ID for context
@@ -336,7 +336,7 @@ async def execute(
                 ),
                 timeout=timeout_seconds or int(os.environ.get("MCP_TOOL_TIMEOUT_SECONDS", "60")),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             tool_call.status = ToolCall.Status.FAILED
             tool_call.result = {"error": "Tool execution timed out"}
             tool_call.save(update_fields=["status", "result"])
@@ -610,6 +610,7 @@ async def search_infrastructure_designs(
 
         from asgiref.sync import sync_to_async
         from django.db.models import Q
+
         from apps.infradesigns.models import InfrastructureDesign
         from services.embeddings.registry import EmbeddingProviderFactory
 

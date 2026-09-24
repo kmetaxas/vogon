@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -47,13 +48,13 @@ class ExecutionPolicy(BaseModel):
     )
 
     @classmethod
-    def from_capability(cls, capability: Any) -> "ExecutionPolicy":
+    def from_capability(cls, capability: Any) -> ExecutionPolicy:
         """Build an ExecutionPolicy from a Capability instance.
 
         Reads ``capability.execution_policy``; empty or None dicts fall back
         to field defaults.
         """
-        policy: Optional[Mapping[str, Any]] = capability.execution_policy
+        policy: Mapping[str, Any] | None = capability.execution_policy
         if not policy:
             return cls()
         return cls(**policy)

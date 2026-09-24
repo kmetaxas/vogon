@@ -569,10 +569,11 @@ class LabelSelectorTests(TransactionTestCase):
     def test_parse_label_selector_rejects_equals_in_metadata_selector(self):
         from apps.marvins.labels import LabelSelectorError, parse_label_selector
 
-        with self.assertRaisesMessage(
-            LabelSelectorError,
-            "Invalid label selector 'client_id=marvin-kill9': labels use a colon (:), not equals (=)",
-        ):
+        expected = (
+            "Invalid label selector 'client_id=marvin-kill9': "
+            "labels use a colon (:), not equals (=)"
+        )
+        with self.assertRaisesMessage(LabelSelectorError, expected):
             parse_label_selector("client_id=marvin-kill9,hostname=kill9.eu")
 
     def test_marvin_matches_labels_exact_match(self):
@@ -1044,7 +1045,7 @@ class MarvinViewTests(TestCase):
         self.assertNotIn(resource, marvin.attached_resources.all())
 
     def test_resource_create_view_renders_schema_form(self):
-        rt = ResourceType.objects.create(
+        ResourceType.objects.create(
             name="prometheus",
             display_name="Prometheus Server",
             config_json_schema={
@@ -1803,6 +1804,7 @@ class MarvinSerializerTests(TransactionTestCase):
         class FakeMarvin:
             id = 1
             organization_id = 1
+            organization = None
             name = "Test"
             status = "online"
             labels = ["env:development", "team:platform", "canary"]

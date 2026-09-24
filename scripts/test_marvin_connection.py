@@ -161,7 +161,7 @@ async def test_connection(args):
                 last_rx_time = time.monotonic()
 
                 if response.HasField("registered"):
-                    print(f"     ✅ SUCCESS! Server accepted registration")
+                    print("     ✅ SUCCESS! Server accepted registration")
                     print(
                         f"        heartbeat_interval: {response.registered.heartbeat_interval_seconds}s"
                     )
@@ -176,7 +176,7 @@ async def test_connection(args):
                     break
 
                 elif response.HasField("execute_capability"):
-                    print(f"     📋 Execute capability request received!")
+                    print("     📋 Execute capability request received!")
                     print(f"        capability: {response.execute_capability.capability_name}")
                     print(f"        session_id: {response.execute_capability.session_id}")
                     print(f"        thread_id: {response.execute_capability.thread_id}")
@@ -188,7 +188,7 @@ async def test_connection(args):
                     break
 
                 elif response.HasField("heartbeat_ack"):
-                    print(f"     💓 Heartbeat ACK received")
+                    print("     💓 Heartbeat ACK received")
 
             # Detect missed heartbeats after stream ends
             if pending_heartbeats:
@@ -215,7 +215,7 @@ async def test_connection(args):
 async def run_with_timeout(args):
     try:
         await asyncio.wait_for(test_connection(args), timeout=args.duration + 5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"\n⏱️  Test timed out after {args.duration}s")
 
 

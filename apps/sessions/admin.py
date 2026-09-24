@@ -1,13 +1,13 @@
 from django.contrib import admin
 
 from apps.sessions.models import (
+    AgentEvent,
+    ArchitectureRequest,
+    Execution,
     Message,
     Thread,
     ToolCall,
     TSession,
-    ArchitectureRequest,
-    AgentEvent,
-    Execution,
 )
 
 

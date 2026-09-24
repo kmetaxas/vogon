@@ -5,7 +5,7 @@ import secrets
 import uuid
 
 from django.conf import settings
-from django.contrib.auth.models import AbstractUser, UserManager
+from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 
@@ -24,7 +24,10 @@ class Organization(models.Model):
     email_domain = models.CharField(
         max_length=255,
         blank=True,
-        help_text="If set, only users with email addresses matching this domain can join the organization (e.g. 'example.com').",
+        help_text=(
+            "If set, only users with email addresses matching this domain "
+            "can join the organization (e.g. 'example.com')."
+        ),
     )
 
     class Meta:
@@ -54,8 +57,6 @@ class User(AbstractUser):
         through="core.OrganizationMembership",
         related_name="users",
     )
-
-    objects = UserManager()
 
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS = ["email"]

@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from apps.core.api_views import OrganizationViewSet
+from apps.infradesigns.api_views import InfrastructureDesignViewSet
 from apps.llm.api_views import LLMProviderViewSet
 from apps.marvins.api_views import (
     CapabilityViewSet,
@@ -10,7 +11,6 @@ from apps.marvins.api_views import (
     ResourceTypeViewSet,
     ResourceViewSet,
 )
-from apps.infradesigns.api_views import InfrastructureDesignViewSet
 from apps.sessions.api_views import (
     AgentEventViewSet,
     ArchitectureRequestViewSet,

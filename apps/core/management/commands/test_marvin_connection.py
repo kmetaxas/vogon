@@ -1,8 +1,8 @@
 import asyncio
 import time
 
-from django.core.management.base import BaseCommand
 import grpc
+from django.core.management.base import BaseCommand
 
 import marvin_pb2
 import marvin_pb2_grpc
@@ -130,23 +130,20 @@ class Command(BaseCommand):
                 stub = marvin_pb2_grpc.MarvinServiceStub(channel)
                 self.stdout.write("Waiting for server to respond...")
 
-                last_rx_time = time.monotonic()
-
                 async for response in stub.Connect(
                     self.send_messages(args, stop_event, pending_heartbeats)
                 ):
                     response_count += 1
                     payload_field = response.WhichOneof("payload")
                     self.stdout.write(f"[RX] Response #{response_count}: {payload_field}")
-                    last_rx_time = time.monotonic()
 
                     if response.HasField("registered"):
                         self.stdout.write("     SUCCESS! Server accepted registration")
+                        hbi = response.registered.heartbeat_interval_seconds
+                        self.stdout.write(f"        heartbeat_interval: {hbi}s")
                         self.stdout.write(
-                            f"        heartbeat_interval: {response.registered.heartbeat_interval_seconds}s"
-                        )
-                        self.stdout.write(
-                            f"        server_timestamp: {response.registered.server_timestamp_unix_ms}"
+                            "        server_timestamp: "
+                            f"{response.registered.server_timestamp_unix_ms}"
                         )
 
                     elif response.HasField("registration_rejected"):
@@ -203,7 +200,7 @@ class Command(BaseCommand):
     async def run_with_timeout(self, args):
         try:
             await asyncio.wait_for(self.test_connection(args), timeout=args.duration + 5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.stdout.write(f"Test timed out after {args.duration}s")
 
     def handle(self, *args, **options):
