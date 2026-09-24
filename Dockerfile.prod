@@ -1,0 +1,70 @@
+# Multi-stage production Dockerfile for the Vogon Django control plane.
+#
+# Build:
+#   docker build -f Dockerfile.prod -t vogon:latest .
+#
+# Stage 1 (builder): install build deps, dependencies, generate gRPC stubs,
+# and collect static files.
+
+FROM python:3.11-slim AS builder
+
+# Build-time dependencies for compiling native packages (psycopg, pgvector, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libffi-dev \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install dependencies first to leverage Docker layer caching.
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir -e ".[dev]"
+
+# Copy source code.
+COPY . .
+
+# Generate gRPC stubs from the proto definition.
+RUN python -m grpc_tools.protoc \
+    --proto_path=proto \
+    --python_out=. \
+    --grpc_python_out=. \
+    proto/marvin.proto
+
+# Collect static files (whitenoise-served).
+RUN python manage.py collectstatic --noinput || true
+
+
+# Stage 2 (production): minimal runtime with only required artifacts.
+
+FROM python:3.11-slim AS runtime
+
+# Runtime system dependencies: libpq for psycopg, curl for healthchecks.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user/group.
+RUN groupadd -r vogon && useradd -r -g vogon -d /app vogon
+
+WORKDIR /app
+
+# Copy the installed Python site-packages from the builder.
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# Copy the installed scripts (uvicorn, etc.) from the builder.
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy the application code.
+COPY --from=builder /app /app
+RUN chown -R vogon:vogon /app
+
+USER vogon
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/ || exit 1
+
+CMD ["uvicorn", "vogon.asgi:application", "--host", "0.0.0.0", "--port", "8000"]

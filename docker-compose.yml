@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vogon
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vogon
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vogon
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8233:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal:
+        condition: service_started
+    networks:
+      - vogon
+
+  migrate:
+    build: .
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py shell -c \"from django.contrib.sites.models import Site; Site.objects.get_or_create(pk=1, defaults={'domain': 'localhost:8000', 'name': 'Vogon'})\""
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vogon
+
+  web:
+    build: .
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             uvicorn vogon.asgi:application --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - vogon
+
+  grpc:
+    build: .
+    command: python -m services.grpc_server.main
+    ports:
+      - "50051:50051"
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - vogon
+
+  mcp:
+    build: .
+    command: python -m services.mcp_server.main
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - vogon
+
+  ollama:
+    image: ollama/ollama:latest
+    # This assumes you have a local ollama install with models downloaded
+    volumes:
+      - ~/.ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - vogon
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  vogon:
+    driver: bridge
