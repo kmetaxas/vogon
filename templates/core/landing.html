@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+
+{% block title %}Welcome - Vogon{% endblock %}
+
+{% block content %}
+<div class="hero">
+    <h1>AI Troubleshooting, Orchestrated</h1>
+    <p>Vogon is your control plane for multi-agent AI troubleshooting. Deploy Marvin agents, manage capabilities, and investigate issues with the power of Temporal orchestration.</p>
+    <div class="hero-actions">
+        <a href="/accounts/signup/" class="btn btn-primary btn-lg">Get Started</a>
+        <a href="/accounts/login/" class="btn btn-secondary btn-lg">Sign In</a>
+    </div>
+</div>
+
+<div class="features">
+    <div class="card">
+        <div class="feature-icon">🤖</div>
+        <h3>Multi-Agent</h3>
+        <p>Deploy and coordinate multiple Marvin agents, each with specialized capabilities for different troubleshooting domains.</p>
+    </div>
+    <div class="card">
+        <div class="feature-icon">⚡</div>
+        <h3>Temporal Orchestration</h3>
+        <p>Reliable, durable workflows manage the full troubleshooting lifecycle from initial report to resolution.</p>
+    </div>
+    <div class="card">
+        <div class="feature-icon">🏢</div>
+        <h3>Organization Management</h3>
+        <p>Multi-tenant with role-based access control. Keep your teams and data organized and secure.</p>
+    </div>
+</div>
+{% endblock %}

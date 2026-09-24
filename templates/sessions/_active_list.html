@@ -1,0 +1,15 @@
+{% if sessions %}
+<div class="session-list">
+    {% for session in sessions %}
+    <a href="{% url 'sessions:session-detail' session.id %}" class="session-item">
+        <div>
+            <div class="session-item-title">{{ session.title }}</div>
+            <div class="session-item-meta">{{ session.updated_at|timesince }} ago</div>
+        </div>
+        <span class="badge badge-{{ session.status }}">{{ session.status }}</span>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No active troubleshootings.</p>
+{% endif %}

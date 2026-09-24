@@ -1,0 +1,12 @@
+<aside class="following-pane" id="following-pane">
+  <header class="following-pane-header">
+    <h3>Following</h3>
+    <button type="button" class="btn-icon" onclick="document.getElementById('following-pane').classList.add('is-hidden');">&#10005;</button>
+  </header>
+
+  <div class="following-pane-content">
+    {% for ft in followed_threads %}
+      {% include 'sessions/_following_card.html' with thread=ft %}
+    {% endfor %}
+  </div>
+</aside>

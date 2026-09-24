@@ -1,0 +1,6 @@
+from typing import Any
+
+class UserManager:
+    def create_user(self, **kwargs: Any) -> Any: ...
+
+class AbstractUser: ...

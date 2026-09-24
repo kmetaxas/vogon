@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block title %}Troubleshooting Sessions - Vogon{% endblock %}
+
+{% block content %}
+<h1>Troubleshooting Sessions</h1>
+
+<div class="text-center mt-lg mb-lg">
+    <a href="{% url 'sessions:session-create' %}" class="btn btn-primary">Start New Session</a>
+</div>
+
+<div class="card" id="session-list">
+    {% if sessions %}
+    <div class="session-list">
+        {% for session in sessions %}
+        <a href="{% url 'sessions:session-detail' session.id %}" class="session-item">
+            <div>
+                <div class="session-item-title">{{ session.title }}</div>
+                <div class="session-item-meta">
+                    {{ session.status }} &middot; {{ session.updated_at|timesince }} ago
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">No sessions yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

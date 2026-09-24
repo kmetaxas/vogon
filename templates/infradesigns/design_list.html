@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block title %}Infrastructure Designs - Vogon{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/infra_designs.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="design-list-wrapper">
+  <div class="design-list-header">
+    <div>
+      <h1 class="design-list-title">Infrastructure Designs</h1>
+      <p class="design-list-subtitle">Reusable infrastructure topologies for LLM-assisted troubleshooting</p>
+    </div>
+    <a href="{% url 'infradesigns:design-create' %}" class="btn btn-primary">+ New Design</a>
+  </div>
+
+  {% if designs %}
+  <div class="design-list-grid">
+    {% for design in designs %}
+    <a href="{% url 'infradesigns:design-detail' design.id %}" class="design-card">
+      <div class="design-card-header">
+        <h3 class="design-card-title">{{ design.name }}</h3>
+        <span class="badge badge-{{ design.environment }}">{{ design.get_environment_display }}</span>
+      </div>
+      <div class="design-card-desc">{{ design.description|default:"No description provided."|truncatewords:25 }}</div>
+      <div class="design-card-meta">
+        <span>{{ design.created_at|timesince }} ago</span>
+        <span>{{ design.marvin_selector.labels|length|default:0 }} labels</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>No designs yet.</p>
+    <a href="{% url 'infradesigns:design-create' %}" class="btn btn-primary">Create your first design</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+
+{% block title %}Set up your organization - Vogon{% endblock %}
+
+{% block content %}
+<h1>Set up your organization</h1>
+<p>Before you can start using Vogon, you need to create a new organization or join an existing one.</p>
+
+<div class="org-setup-tabs">
+    <button
+        type="button"
+        class="tab-btn {% if tab != 'join' %}active{% endif %}"
+        onclick="showTab('create')">
+        Create new
+    </button>
+    <button
+        type="button"
+        class="tab-btn {% if tab == 'join' %}active{% endif %}"
+        onclick="showTab('join')">
+        Join existing
+    </button>
+</div>
+
+<div id="tab-create" class="tab-content {% if tab == 'join' %}hidden{% endif %}">
+    <div class="card">
+        <h2 class="card-title">Create a new organization</h2>
+        <form method="post" action="{% url 'core:org-setup' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="create">
+            <div class="form-group">
+                <label for="id_name">Organization name</label>
+                <input type="text" name="name" id="id_name" class="form-control" required placeholder="Acme Corp">
+            </div>
+            <div class="form-group">
+                <label for="id_email_domain">Email domain restriction <span class="text-muted">(optional)</span></label>
+                <input type="text" name="email_domain" id="id_email_domain" class="form-control" placeholder="example.com">
+                <p class="form-help">If set, only users with an email address at this domain can join.</p>
+            </div>
+            <button type="submit" class="btn btn-primary">Create organization</button>
+        </form>
+    </div>
+</div>
+
+<div id="tab-join" class="tab-content {% if tab != 'join' %}hidden{% endif %}">
+    <div class="card">
+        <h2 class="card-title">Join an existing organization</h2>
+        <p>Enter the invitation code you received, or click the invitation link in your email.</p>
+        <form method="post" action="{% url 'core:org-setup' %}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="join">
+            <div class="form-group">
+                <label for="id_code">Invitation code</label>
+                <input type="text" name="code" id="id_code" class="form-control" required value="{{ invitation_code }}">
+            </div>
+            <button type="submit" class="btn btn-primary">Join organization</button>
+        </form>
+    </div>
+</div>
+
+<script>
+function showTab(tab) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+    document.getElementById('tab-' + tab).classList.remove('hidden');
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    document.querySelector('.tab-btn:nth-child(' + (tab === 'create' ? 1 : 2) + ')').classList.add('active');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,61 @@
+<nav class="thread-nav" id="thread-nav">
+  <div class="thread-nav-section">
+    <span class="thread-nav-heading">Your Thread</span>
+    <ul class="thread-nav-list">
+      <li class="thread-nav-item is-primary"
+          hx-get="{% url 'sessions:thread-detail-partial' session.id primary_thread.id %}"
+          hx-target="#primary-chat"
+          hx-swap="innerHTML">
+        <a href="#" class="thread-nav-link">
+          <span class="thread-status thread-status--{{ primary_thread.status }}"></span>
+          You
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  {% with others=threads|dictsort:"created_at" %}
+  {% if others %}
+  <div class="thread-nav-section">
+    <span class="thread-nav-heading">Others</span>
+    <ul class="thread-nav-list">
+      {% for thread in others %}
+      {% if thread.user != user %}
+      <li class="thread-nav-item {% if thread.is_followed_by_user %}has-new{% endif %}"
+          hx-get="{% url 'sessions:thread-detail-partial' session.id thread.id %}"
+          hx-target="#primary-chat"
+          hx-swap="innerHTML">
+        <a href="#" class="thread-nav-link">
+          <span class="thread-status thread-status--{{ thread.status }}"></span>
+          {{ thread.user.username }}
+          {% if thread.is_followed_by_user %}
+            <span class="thread-follow-icon">&#9733;</span>
+          {% endif %}
+        </a>
+        {% if not thread.is_followed_by_user %}
+        <form method="post"
+              action="{% url 'sessions:thread-follow' session.id thread.id %}"
+              hx-post="{% url 'sessions:thread-follow' session.id thread.id %}"
+              hx-target="#thread-nav"
+              hx-swap="outerHTML">
+          {% csrf_token %}
+          <button type="submit" class="btn-icon" title="Follow">&#9734;</button>
+        </form>
+        {% else %}
+        <form method="post"
+              action="{% url 'sessions:thread-unfollow' session.id thread.id %}"
+              hx-post="{% url 'sessions:thread-unfollow' session.id thread.id %}"
+              hx-target="#thread-nav"
+              hx-swap="outerHTML">
+          {% csrf_token %}
+          <button type="submit" class="btn-icon" title="Unfollow">&#9733;</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endwith %}
+</nav>

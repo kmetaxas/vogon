@@ -1,0 +1,12 @@
+{
+  "include": [
+    "."
+  ],
+  "pythonVersion": "3.12",
+  "stubPath": "typings",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    ".venv/lib/python3.12/site-packages"
+  ]
+}

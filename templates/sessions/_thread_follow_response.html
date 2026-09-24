@@ -1,0 +1,10 @@
+{% include 'sessions/_thread_nav.html' %}
+<div id="following-region" hx-swap-oob="outerHTML">
+  {% if followed_threads %}
+  {% include 'sessions/_following_pane.html' %}
+  <button class="following-toggle" id="following-toggle"
+          onclick="document.getElementById('following-pane').classList.toggle('is-hidden');">
+    Following ({{ followed_threads|length }})
+  </button>
+  {% endif %}
+</div>

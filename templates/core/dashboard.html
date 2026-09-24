@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard - Vogon{% endblock %}
+
+{% block content %}
+<div class="text-center mb-lg">
+    <h1>Dashboard</h1>
+    <a href="{% url 'sessions:session-create' %}" class="btn btn-primary btn-lg">Start Troubleshooting</a>
+</div>
+
+<div class="dashboard-grid">
+    <div class="card" id="active-sessions-box"
+         hx-get="{% url 'sessions:active-list' %}"
+         hx-trigger="load, every 10s">
+        <h2 class="card-title">Active Troubleshootings</h2>
+        <div class="htmx-indicator">Loading...</div>
+        <p class="empty-state">No active troubleshootings.</p>
+    </div>
+
+    <div class="card" id="previous-sessions-box"
+         hx-get="{% url 'sessions:history-list' %}"
+         hx-trigger="load">
+        <h2 class="card-title">Previous Troubleshootings</h2>
+        <div class="htmx-indicator">Loading...</div>
+        <p class="empty-state">No previous troubleshootings.</p>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,315 @@
+syntax = "proto3";
+
+package marvin;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
+
+// ============================================================================
+// Service Definition
+// ============================================================================
+
+service MarvinService {
+  // Bi-directional stream for Marvin agent to connect to control plane.
+  // Lifecycle:
+  //   1. Marvin sends Register (once)
+  //   2. Control plane responds with Registered or RegistrationRejected
+  //   3. Marvin sends periodic Heartbeat
+  //   4. Control plane sends ExecuteCapability, Disconnect, or UpdateConfig
+  //   5. Marvin sends CapabilityResult, LogEvent, StatusUpdate
+  rpc Connect(stream AgentMessage) returns (stream ControlMessage);
+}
+
+// ============================================================================
+// Top-Level Messages (Stream Envelopes)
+// ============================================================================
+
+// Messages sent from the Marvin agent to the control plane.
+message AgentMessage {
+  // Unique identifier for this specific Marvin agent.
+  // Must remain constant across reconnections so the control plane
+  // can correlate state (capabilities, history, host info).
+  string agent_id = 1;
+
+  oneof payload {
+    Register register = 2;
+    Heartbeat heartbeat = 3;
+    CapabilityResult capability_result = 4;
+    LogEvent log_event = 5;
+    StatusUpdate status_update = 6;
+  }
+}
+
+// Messages sent from the control plane to the Marvin agent.
+message ControlMessage {
+  // Unique identifier for this control message. Used for correlation
+  // in logs and for idempotency (Marvin can deduplicate by command_id).
+  string command_id = 1;
+
+  oneof payload {
+    Registered registered = 2;
+    RegistrationRejected registration_rejected = 3;
+    ExecuteCapability execute_capability = 4;
+    UpdateConfig update_config = 5;
+    Disconnect disconnect = 6;
+    HeartbeatAck heartbeat_ack = 7;
+  }
+}
+
+// ============================================================================
+// Agent -> Control Plane Messages
+// ============================================================================
+
+// Initial handshake. Sent once immediately after the stream opens.
+// The control plane uses this to create or update the Marvin record,
+// validate the agent, and store its capabilities and host metadata.
+message Register {
+  // Software version of the Marvin agent (e.g., "marvin-agent/v2.1.4").
+  string agent_version = 1;
+
+  // Host / environment metadata. Critical for routing requests to the
+  // correct Marvin (e.g., "server1.us-east.example.com").
+  HostMetadata host = 2;
+
+  // Full capability manifest. Includes both enabled and disabled
+  // capabilities, with their current configurations.
+  repeated CapabilityManifest capabilities = 3;
+
+  // Free-form labels for grouping, filtering, or routing.
+  // Examples: "env:production", "team:platform", "datacenter:us-east-1".
+  repeated string labels = 4;
+
+  // Optional: nonce for replay protection during registration.
+  // Control plane may reject if nonce was seen recently.
+  string registration_nonce = 5;
+
+  // Organization-scoped registration key used to authenticate the agent
+  // and determine which organization the Marvin belongs to.
+  // Required when auto-creation is disabled.
+  string registration_key = 6;
+}
+
+// Periodic keepalive. Sent at a configurable interval (e.g., every 30s).
+// The control plane uses this to detect disconnects and track health.
+message Heartbeat {
+  int64 timestamp_unix_ms = 1;
+
+  // Optional: current resource utilization. Helps the control plane
+  // avoid scheduling work on overloaded agents.
+  ResourceMetrics resources = 2;
+}
+
+// Result of a capability execution initiated by ExecuteCapability.
+message CapabilityResult {
+  // Mirrors the command_id from the ExecuteCapability request.
+  string command_id = 1;
+
+  // Session and thread context from the original command. Required so
+  // the control plane can route the result to the correct Temporal
+  // workflow and database records.
+  string session_id = 2;
+  string thread_id = 3;
+
+  // Which capability was executed.
+  string capability_name = 4;
+
+  bool success = 5;
+
+  // JSON-encoded result payload. Schema is capability-specific.
+  string result_json = 6;
+
+  // Human-readable error message if success == false.
+  string error_message = 7;
+
+  // How long the execution took. Useful for metrics and timeouts.
+  google.protobuf.Duration execution_duration = 8;
+
+  // Echo of result_index from ExecuteCapability.
+  // Required for fan-out result ordering when multiple commands are in flight
+  // to the same Marvin concurrently.
+  int32 result_index = 9;
+}
+
+// Agent-generated log line forwarded to the control plane.
+// Useful for centralized debugging without requiring direct host access.
+message LogEvent {
+  enum Level {
+    DEBUG = 0;
+    INFO = 1;
+    WARNING = 2;
+    ERROR = 3;
+    FATAL = 4;
+  }
+
+  int64 timestamp_unix_ms = 1;
+  Level level = 2;
+  string message = 3;
+  // Optional JSON object with structured fields.
+  string attributes_json = 4;
+}
+
+// Sent when the agent detects a significant state change that the
+// control plane should know about (e.g., capability disabled due to
+// local error, disk full, license expiry).
+message StatusUpdate {
+  enum Severity {
+    INFO = 0;
+    WARNING = 1;
+    CRITICAL = 2;
+  }
+
+  Severity severity = 1;
+  string message = 2;
+  // Optional: which capability is affected, if any.
+  string capability_name = 3;
+}
+
+// ============================================================================
+// Control Plane -> Agent Messages
+// ============================================================================
+
+// Successful registration acknowledgement.
+message Registered {
+  // Interval in seconds the agent should send Heartbeats.
+  int32 heartbeat_interval_seconds = 1;
+
+  // Server-side timestamp for clock skew detection.
+  int64 server_timestamp_unix_ms = 2;
+
+  // Optional: immediate push of effective config at registration time.
+  // If present, agent should apply it before accepting commands.
+  UpdateConfig effective_config = 3;
+}
+
+// Rejected registration (e.g., invalid auth, duplicate agent_id, blacklisted).
+message RegistrationRejected {
+  string reason = 1;
+  // If true, the agent should not retry automatically.
+  bool permanent = 2;
+}
+
+// Request to execute a capability on the Marvin agent.
+message ExecuteCapability {
+  // Session and thread context. Must be echoed back in CapabilityResult
+  // so the control plane can associate the result with the correct
+  // troubleshooting workflow and ToolCall record.
+  string session_id = 1;
+  string thread_id = 2;
+
+  // Which capability to invoke.
+  string capability_name = 3;
+
+  // JSON-encoded parameters. Must validate against the capability's
+  // json_schema from the CapabilityManifest.
+  string parameters_json = 4;
+
+  // Absolute deadline for the execution. The agent should abort and
+  // return a timeout error if exceeded.
+  int64 deadline_unix_ms = 5;
+
+  // Optional opaque target-set ID for fan-out correlation.
+  // The Marvin agent does not interpret this; it echoes it back in CapabilityResult.
+  string target_set_id = 6;
+
+  // Execution mode hint. Values: "single" | "fanout".
+  // The agent may use this to decide whether to execute synchronously or
+  // spin off a goroutine for isolation. Default "single".
+  string execution_mode = 7;
+
+  // Index of this execution within a fan-out batch.
+  // The agent echoes this back in CapabilityResult so the control plane
+  // can assemble ordered results.
+  int32 result_index = 8;
+}
+
+// Push configuration updates to the agent without requiring reconnect.
+message UpdateConfig {
+  // One or more capabilities to update. If a capability is omitted,
+  // its current config is unchanged. An empty list is a no-op.
+  repeated CapabilityManifest capabilities = 1;
+
+  // Monotonic version for idempotency / ordering.
+  // Agent should ignore updates with version <= last_applied_version.
+  int64 config_version = 2;
+}
+
+// Graceful or forced disconnection request.
+message Disconnect {
+  string reason = 1;
+  // If true, the agent should wait for in-flight commands to complete
+  // before closing the stream.
+  bool allow_graceful = 2;
+}
+
+// Acknowledgement of a received heartbeat.
+message HeartbeatAck {
+  // Echo of the heartbeat timestamp received by the server.
+  int64 received_timestamp_unix_ms = 1;
+}
+
+// ============================================================================
+// Supporting Messages (Reusable Structs)
+// ============================================================================
+
+// Static host metadata reported at registration. Does not change during
+// the lifetime of a single agent process.
+message HostMetadata {
+  // Primary hostname (e.g., "server1.us-east.example.com").
+  string hostname = 1;
+
+  // IP address the agent sees itself on. Useful for NAT debugging.
+  string local_ip = 2;
+
+  // Cloud / VM provider metadata.
+  string provider = 3;       // e.g., "aws", "gcp", "azure", "on-prem"
+  string region = 4;         // e.g., "us-east-1"
+  string availability_zone = 5; // e.g., "us-east-1a"
+  string vm_id = 6;          // e.g., EC2 instance ID
+
+  // Operating system info.
+  string os = 7;             // e.g., "Linux", "Windows"
+  string os_version = 8;     // e.g., "Ubuntu 22.04.3 LTS"
+  string arch = 9;            // e.g., "x86_64", "arm64"
+}
+
+// A single capability as advertised by the agent.
+message CapabilityManifest {
+  string name = 1;
+  string description = 2;
+
+  // Is this capability currently enabled and ready to accept commands?
+  bool enabled = 3;
+
+  // JSON Schema describing the expected parameters for ExecuteCapability.
+  // The control plane uses this to validate parameters before sending.
+  string parameters_json_schema = 4;
+
+  // Capability-specific configuration.
+  google.protobuf.Struct config = 5;
+
+  // Optional: human-readable summary of the current config.
+  string config_summary = 6;
+
+  // IDs of resources that contributed to this config.
+  repeated string resource_ids = 7;
+
+  // Discovery metadata for semantic capability search.
+  repeated string use_cases = 8;
+  repeated string aliases = 9;
+  repeated string tags = 10;
+}
+
+// Resource snapshot sent with Heartbeat.
+message ResourceMetrics {
+  // CPU utilization as a fraction (0.0 - 1.0).
+  double cpu_usage = 1;
+
+  // Memory utilization as a fraction (0.0 - 1.0).
+  double memory_usage = 2;
+
+  // Load average (1m) or equivalent system pressure metric.
+  double load_average = 3;
+
+  // Disk utilization as a fraction (0.0 - 1.0), if relevant.
+  double disk_usage = 4;
+}

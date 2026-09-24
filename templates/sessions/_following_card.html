@@ -1,0 +1,25 @@
+{% load markdown_tags %}
+<div class="following-card" id="following-card-{{ thread.id }}"
+     hx-get="{% url 'sessions:thread-detail-partial' session.id thread.id %}"
+     hx-target="#primary-chat"
+     hx-swap="innerHTML">
+  <div class="following-card-header">
+    <span class="following-card-owner">{{ thread.user.username }}</span>
+    <form method="post" action="{% url 'sessions:thread-unfollow' session.id thread.id %}"
+          hx-post="{% url 'sessions:thread-unfollow' session.id thread.id %}"
+          hx-target="#thread-nav"
+          hx-swap="outerHTML">
+      {% csrf_token %}
+      <button type="submit" class="btn-icon" title="Unfollow">&#10005;</button>
+    </form>
+  </div>
+  <div class="following-card-messages">
+    {% with last_msg=thread.messages.last %}
+    {% if last_msg %}
+    <div><span>{{ last_msg.role|title }}:</span> {{ last_msg.content|truncatechars:120|markdownify }}</div>
+    {% else %}
+    <div>No messages yet.</div>
+    {% endif %}
+    {% endwith %}
+  </div>
+</div>

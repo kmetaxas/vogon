@@ -1,0 +1,58 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>{% block title %}Vogon{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="{% static 'css/vogon.css' %}">
+    <script>
+        document.addEventListener('htmx:configRequest', function(event) {
+            event.detail.headers['X-CSRFToken'] = document.querySelector('meta[name="csrf-token"]').content;
+        });
+    </script>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav>
+        <div class="nav-inner">
+            <a href="{% url 'core:index' %}" class="nav-brand">Vogon</a>
+            <div class="nav-links">
+                {% if user.is_authenticated %}
+                    <a href="{% url 'core:dashboard' %}">Dashboard</a>
+                    <a href="{% url 'marvins:marvin-list' %}">Marvins</a>
+                    <a href="{% url 'marvins:resource-list' %}">Resources</a>
+                    <a href="{% url 'sessions:session-list' %}">Sessions</a>
+                    <a href="{% url 'infradesigns:design-list' %}">Designs</a>
+                {% endif %}
+            </div>
+            <div class="nav-user">
+                {% if user.is_authenticated %}
+                    <div class="user-menu">
+                        <button class="user-menu-btn" type="button">
+                            {{ user.username }}
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <div class="user-dropdown">
+                            <a href="{% url 'core:profile' %}">Profile</a>
+                            <a href="{% url 'core:settings' %}">Settings</a>
+                            <a href="{% url 'core:org-detail' %}">Organization</a>
+                            <a href="/accounts/logout/">Logout</a>
+                        </div>
+                    </div>
+                {% else %}
+                    <a href="/accounts/login/" class="btn btn-secondary">Sign In</a>
+                    <a href="/accounts/signup/" class="btn btn-primary">Get Started</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    <div class="toast-container" id="toast-container"></div>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block title %}{{ design.name }} - Design - Vogon{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/infra_designs.css' %}">
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="design-form-wrapper">
+  <div class="design-detail-header">
+    <div>
+      <h1 class="design-detail-title">{{ design.name }}</h1>
+      <span class="badge badge-{{ design.environment }}">{{ design.get_environment_display }}</span>
+    </div>
+    <a href="{% url 'infradesigns:design-edit' design.id %}" class="btn btn-secondary">Edit Design</a>
+  </div>
+
+  {% if design.description %}
+  <div class="design-detail-section">
+    <div class="design-detail-section-title">Description</div>
+    <div class="design-detail-desc">{{ design.description }}</div>
+  </div>
+  {% endif %}
+
+  {% if design.mermaid_topology %}
+  <div class="design-detail-section">
+    <div class="design-detail-section-title">Topology</div>
+    <div class="design-detail-mermaid">
+      <pre class="mermaid">{{ design.mermaid_topology }}</pre>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if design.marvin_selector %}
+  <div class="design-detail-section">
+    <div class="design-detail-section-title">Marvin Selector</div>
+    <div class="design-detail-selector">
+      {% if design.marvin_selector.labels %}
+      <ul>
+        {% for k, v in design.marvin_selector.labels.items %}
+        <li><strong>{{ k }}:</strong> {{ v|default:"<em>any</em>" }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <pre>{{ design.marvin_selector }}</pre>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,191 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ marvin.name }} - Marvin Agent - Vogon{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+    <div>
+        <h1 style="margin: 0;">{{ marvin.name }}</h1>
+        <span class="badge badge-{{ marvin.status }}">{{ marvin.status }}</span>
+    </div>
+    <a href="{% url 'marvins:marvin-list' %}" class="btn btn-secondary">&larr; Back to Marvin Agents</a>
+</div>
+
+<nav class="tabs" role="tablist">
+    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="overview">Overview</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="capabilities">Capabilities</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="config">Config</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="resources">Resources</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="recent">Recent Tool Calls</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="pending">Pending</button>
+</nav>
+
+<div class="tab-panel active" id="tab-overview">
+    <div class="card" style="margin-bottom: var(--spacing-lg);">
+        <h2 class="card-title">Metadata</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--spacing-md);">
+            <div>
+                <div class="session-item-meta">client_id</div>
+                <div>{{ marvin.client_id }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">agent_version</div>
+                <div>{{ marvin.agent_version|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">last_seen</div>
+                <div>{{ marvin.last_seen|default:"Never" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">hostname</div>
+                <div>{{ marvin.hostname|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">local_ip</div>
+                <div>{{ marvin.local_ip|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">provider</div>
+                <div>{{ marvin.provider|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">region</div>
+                <div>{{ marvin.region|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">availability_zone</div>
+                <div>{{ marvin.availability_zone|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">vm_id</div>
+                <div>{{ marvin.vm_id|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">os</div>
+                <div>{{ marvin.os|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">os_version</div>
+                <div>{{ marvin.os_version|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">arch</div>
+                <div>{{ marvin.arch|default:"—" }}</div>
+            </div>
+            <div>
+                <div class="session-item-meta">labels</div>
+                <div>{% if marvin.labels %}{{ marvin.labels|join:", " }}{% else %}—{% endif %}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="tab-panel" id="tab-capabilities">
+    <div class="card">
+        <h2 class="card-title">Capabilities</h2>
+        {% if capabilities %}
+        <div class="session-list">
+            {% for cap in capabilities %}
+            <div class="session-item">
+                <div>
+                    <div class="session-item-title">{{ cap.name }}
+                        {% if cap.name in overridden_capabilities %}
+                        <span class="badge badge-warning" style="margin-left: var(--spacing-xs);">Overridden</span>
+                        {% endif %}
+                    </div>
+                    <div class="session-item-meta">{{ cap.description|default:"No description" }}</div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="empty-state">No capabilities registered.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="tab-panel" id="tab-config">
+    <div class="card">
+        <h2 class="card-title">Online Config</h2>
+        {% include "marvins/_marvin_config.html" %}
+    </div>
+</div>
+
+<div class="tab-panel" id="tab-resources">
+    <div class="card">
+        {% include "marvins/_marvin_resources.html" %}
+    </div>
+</div>
+
+<div class="tab-panel" id="tab-recent">
+    <div class="card">
+        <h2 class="card-title">Recent Tool Calls</h2>
+        {% if recent_tool_calls %}
+        <div class="session-list">
+            {% for tc in recent_tool_calls %}
+            <div class="session-item">
+                <div>
+                    <div class="session-item-title">{{ tc.capability.name|default:"Unknown" }}</div>
+                    <div class="session-item-meta">{{ tc.parameters|truncatechars:120 }}</div>
+                    <div class="session-item-meta">{{ tc.created_at }}{% if tc.completed_at %} &middot; {{ tc.completed_at }}{% endif %}</div>
+                </div>
+                <span class="badge badge-{{ tc.status }}">{{ tc.status }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="empty-state">No recent tool calls.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="tab-panel" id="tab-pending">
+    <div class="card">
+        <h2 class="card-title">Pending Tool Calls</h2>
+        {% if pending_tool_calls %}
+        <div class="session-list">
+            {% for tc in pending_tool_calls %}
+            <div class="session-item">
+                <div>
+                    <div class="session-item-title">{{ tc.capability.name|default:"Unknown" }}</div>
+                    <div class="session-item-meta">{{ tc.parameters|truncatechars:120 }}</div>
+                    <div class="session-item-meta">{{ tc.created_at }}{% if tc.completed_at %} &middot; {{ tc.completed_at }}{% endif %}</div>
+                </div>
+                <span class="badge badge-{{ tc.status }}">{{ tc.status }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="empty-state">No pending tool calls.</p>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+(function () {
+    const tabList = document.querySelector('.tabs');
+    if (!tabList) return;
+
+    tabList.addEventListener('click', function (e) {
+        const btn = e.target.closest('.tab-btn');
+        if (!btn) return;
+
+        const tabId = btn.dataset.tab;
+        if (!tabId) return;
+
+        tabList.querySelectorAll('.tab-btn').forEach(function (b) {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+        });
+        document.querySelectorAll('.tab-panel').forEach(function (p) {
+            p.classList.remove('active');
+        });
+
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        const panel = document.getElementById('tab-' + tabId);
+        if (panel) panel.classList.add('active');
+    });
+})();
+</script>
+{% endblock %}

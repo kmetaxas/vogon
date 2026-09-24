@@ -1,0 +1,11 @@
+{% if session.status == session.Status.ACTIVE %}
+    <span class="badge badge-active">{{ session.get_status_display }}</span>
+{% elif session.status == session.Status.PAUSED %}
+    <span class="badge badge-paused">{{ session.get_status_display }}</span>
+{% elif session.status == session.Status.COMPLETED %}
+    <span class="badge badge-completed">{{ session.get_status_display }}</span>
+{% elif session.status == session.Status.FAILED %}
+    <span class="badge badge-failed">{{ session.get_status_display }}</span>
+{% else %}
+    <span class="badge badge-pending">{{ session.get_status_display }}</span>
+{% endif %}

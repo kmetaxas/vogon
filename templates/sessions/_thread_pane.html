@@ -1,0 +1,93 @@
+<div class="thread-pane" data-thread-id="{{ thread.id }}">
+  <header class="thread-pane-header">
+    <div class="thread-pane-meta">
+      <span class="thread-pane-owner">
+        {% if is_primary %}Your Thread{% else %}{{ thread.user.username }}'s Thread{% endif %}
+      </span>
+      <span class="badge badge-{{ thread.visibility }}">{{ thread.visibility|title }}</span>
+    </div>
+    {% if is_primary and can_complete_session and session.status != session.Status.COMPLETED %}
+    <div class="thread-pane-actions">
+      <form method="post" action="{% url 'sessions:session-complete' session.id %}"
+            hx-post="{% url 'sessions:session-complete' session.id %}"
+            hx-target="#primary-chat"
+            hx-swap="innerHTML">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-secondary">Close session</button>
+      </form>
+    </div>
+    {% elif not is_primary %}
+    <div class="thread-pane-actions">
+      <form method="post" action="{% url 'sessions:thread-follow' session.id thread.id %}"
+            hx-post="{% url 'sessions:thread-follow' session.id thread.id %}"
+            hx-target="#thread-nav"
+            hx-swap="outerHTML">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-secondary">Follow</button>
+      </form>
+    </div>
+    {% endif %}
+  </header>
+
+  <div class="thread-messages" id="thread-messages-{{ thread.id }}"
+       data-thread-messages="true">
+       {% include 'sessions/_chat_messages.html' %}
+  </div>
+
+  {% if is_primary %}
+  {% if session.status == session.Status.COMPLETED %}
+  <div class="thread-view-banner">Session completed. No further messages can be sent.</div>
+  {% elif session.status == session.Status.PAUSED %}
+  <div class="thread-view-banner">
+    The assistant needs more time to finish.
+    <button type="button" class="btn btn-primary btn-sm"
+            hx-post="{% url 'sessions:thread-send-message' session.id thread.id %}"
+            hx-target="#thread-messages-{{ thread.id }}"
+            hx-swap="innerHTML"
+            hx-vals='{"content": "Continue"}'>Continue</button>
+  </div>
+  <div class="thread-composer">
+    <form id="chat-form"
+          method="post"
+          action="{% url 'sessions:thread-send-message' session.id thread.id %}"
+          hx-post="{% url 'sessions:thread-send-message' session.id thread.id %}"
+          hx-target="#thread-messages-{{ thread.id }}"
+          hx-swap="innerHTML"
+          class="composer-form">
+      {% csrf_token %}
+      <textarea id="chat-input" name="content" class="form-control" rows="1" placeholder="Or send a new message to continue..." required></textarea>
+      <button type="submit" class="btn btn-primary">Send</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="thread-composer">
+    {% if is_primary %}
+    <div class="composer-toolbar">
+      <button type="button" class="btn btn-sm btn-secondary" id="design-ref-btn"
+              title="Reference an infrastructure design">&#128208; Design</button>
+    </div>
+    {% endif %}
+    <form id="chat-form"
+          method="post"
+          action="{% url 'sessions:thread-send-message' session.id thread.id %}"
+          hx-post="{% url 'sessions:thread-send-message' session.id thread.id %}"
+          hx-target="#thread-messages-{{ thread.id }}"
+          hx-swap="innerHTML"
+          class="composer-form">
+      {% csrf_token %}
+      <textarea id="chat-input" name="content" class="form-control" rows="1" placeholder="Describe the issue..." required></textarea>
+      <button type="submit" class="btn btn-primary">Send</button>
+    </form>
+    <div style="text-align: center; margin-top: var(--spacing-xs); font-size: 0.75rem; color: var(--color-text-secondary);">
+      Markdown supported
+    </div>
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="thread-view-banner">
+    You are viewing {{ thread.user.username }}'s thread.
+    <a href="#" hx-get="{% url 'sessions:thread-detail-partial' session.id primary_thread.id %}"
+       hx-target="#primary-chat">Switch to Your Thread</a> to send messages.
+  </div>
+  {% endif %}
+</div>

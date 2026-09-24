@@ -1,0 +1,428 @@
+{% extends 'base.html' %}
+
+{% block title %}{% if is_create %}New Resource{% else %}{{ resource.name }}{% endif %} - Vogon{% endblock %}
+
+{% block extra_css %}
+<style>
+    .config-field-group {
+        margin-bottom: var(--spacing-md);
+        padding: var(--spacing-sm);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-secondary, #f8f9fa);
+    }
+    .config-field-group.nested {
+        margin-left: var(--spacing-md);
+        margin-top: var(--spacing-sm);
+        border-left: 3px solid var(--color-primary, #6366f1);
+    }
+    .config-field-group legend {
+        font-weight: 500;
+        padding: 0 var(--spacing-xs);
+    }
+    .config-field {
+        margin-bottom: var(--spacing-sm);
+    }
+    .config-field:last-child {
+        margin-bottom: 0;
+    }
+    .config-field label {
+        display: block;
+        margin-bottom: var(--spacing-xs);
+        font-weight: 500;
+        font-size: 0.9rem;
+    }
+    .config-field label.required::after {
+        content: ' *';
+        color: #dc2626;
+    }
+    .config-field input[type="text"],
+    .config-field input[type="number"],
+    .config-field select,
+    .config-field textarea {
+        width: 100%;
+        padding: var(--spacing-sm);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        font-size: 0.9rem;
+    }
+    .config-field input[type="checkbox"] {
+        margin-right: var(--spacing-xs);
+    }
+    .config-field .field-desc {
+        font-size: 0.8rem;
+        color: var(--color-text-secondary, #666);
+        margin-top: var(--spacing-xs);
+        display: block;
+    }
+    .config-field .field-pattern {
+        font-size: 0.8rem;
+        color: #666;
+        font-family: monospace;
+        margin-top: var(--spacing-xs);
+        display: block;
+    }
+    .config-raw-textarea {
+        width: 100%;
+        min-height: 200px;
+        padding: var(--spacing-sm);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        font-family: monospace;
+        font-size: 0.9rem;
+    }
+    .schema-title {
+        font-weight: 600;
+        margin-bottom: var(--spacing-xs);
+    }
+    .schema-desc {
+        color: var(--color-text-secondary, #666);
+        font-size: 0.85rem;
+        margin-bottom: var(--spacing-sm);
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+    <h1 style="margin: 0;">{% if is_create %}New Resource{% else %}Edit {{ resource.name }}{% endif %}</h1>
+    <a href="{% url 'marvins:resource-list' %}" class="btn btn-secondary">&larr; Back to Resources</a>
+</div>
+
+{% if error %}
+<div class="badge badge-offline" style="margin-bottom: var(--spacing-md); display: inline-block;">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+    <form id="resource-form" method="post" action="{% if is_create %}{% url 'marvins:resource-create' %}{% else %}{% url 'marvins:resource-edit' resource.id %}{% endif %}">
+        {% csrf_token %}
+        <div style="margin-bottom: var(--spacing-md);">
+            <label for="name" style="display: block; margin-bottom: var(--spacing-xs); font-weight: 500;">Name</label>
+            <input type="text" id="name" name="name" value="{{ resource.name|default:'' }}" required
+                   style="width: 100%; padding: var(--spacing-sm); border: 1px solid var(--color-border); border-radius: var(--radius);">
+        </div>
+
+        <div style="margin-bottom: var(--spacing-md);">
+            <label for="resource_type" style="display: block; margin-bottom: var(--spacing-xs); font-weight: 500;">Resource Type</label>
+            <select id="resource_type" name="resource_type" required
+                    style="width: 100%; padding: var(--spacing-sm); border: 1px solid var(--color-border); border-radius: var(--radius);">
+                <option value="">-- Select type --</option>
+                {% for rt in resource_types %}
+                <option value="{{ rt.id }}" {% if resource and resource.resource_type.id == rt.id %}selected{% endif %}>{{ rt.display_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div style="margin-bottom: var(--spacing-md);">
+            <label for="description" style="display: block; margin-bottom: var(--spacing-xs); font-weight: 500;">Description</label>
+            <textarea id="description" name="description" rows="3"
+                      style="width: 100%; padding: var(--spacing-sm); border: 1px solid var(--color-border); border-radius: var(--radius);">{{ resource.description|default:'' }}</textarea>
+        </div>
+
+        <div style="margin-bottom: var(--spacing-md);">
+            <label style="display: block; margin-bottom: var(--spacing-xs); font-weight: 500;">Config</label>
+            <div id="schema-meta"></div>
+            <div id="schema-form"></div>
+            <textarea id="config" name="config" rows="10" style="display: none;"></textarea>
+        </div>
+
+        <div style="margin-bottom: var(--spacing-md);">
+            <label style="display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer;">
+                <input type="checkbox" name="enabled" {% if is_create or resource.enabled %}checked{% endif %}>
+                <span>Enabled</span>
+            </label>
+        </div>
+
+        <div style="display: flex; gap: var(--spacing-md);">
+            <button type="submit" class="btn btn-primary">{% if is_create %}Create Resource{% else %}Save Changes{% endif %}</button>
+            <a href="{% url 'marvins:resource-list' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{{ resource_type_schemas|json_script:"resource-type-schemas" }}
+{{ resource.config|default:'{}'|json_script:"res-config-data" }}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+    const SCHEMAS = JSON.parse(document.getElementById('resource-type-schemas').textContent);
+    let INITIAL_CONFIG = JSON.parse(document.getElementById('res-config-data').textContent || '{}');
+
+    const resourceTypeSelect = document.getElementById('resource_type');
+    const schemaMetaContainer = document.getElementById('schema-meta');
+    const schemaFormContainer = document.getElementById('schema-form');
+    const configTextarea = document.getElementById('config');
+    const form = document.getElementById('resource-form');
+
+    function resolveRef(rootSchema, ref) {
+        if (!ref || typeof ref !== 'string') return null;
+        if (ref.startsWith('#/')) {
+            const parts = ref.slice(2).split('/');
+            let current = rootSchema;
+            for (const part of parts) {
+                if (current === null || current === undefined) return null;
+                current = current[part.replace(/~1/g, '/').replace(/~0/g, '~')];
+            }
+            return current;
+        }
+        return null;
+    }
+
+    function normalizeProp(prop, rootSchema) {
+        if (!prop || typeof prop !== 'object') return prop;
+        if (prop.$ref) {
+            const resolved = resolveRef(rootSchema, prop.$ref);
+            if (resolved) {
+                const merged = Object.assign({}, resolved);
+                for (const key of Object.keys(prop)) {
+                    if (key !== '$ref') merged[key] = prop[key];
+                }
+                return merged;
+            }
+        }
+        return prop;
+    }
+
+    function makeFieldName(path) {
+        return 'cfg_' + path.join('__');
+    }
+
+    function renderInput(key, prop, value, path, requiredSet) {
+        const field = document.createElement('div');
+        field.className = 'config-field';
+
+        const label = document.createElement('label');
+        label.textContent = prop.title || key;
+        if (requiredSet && requiredSet.has(key)) {
+            label.classList.add('required');
+        }
+        field.appendChild(label);
+
+        let input;
+        const fieldName = makeFieldName(path.concat(key));
+        const val = value !== undefined ? value : (prop.default !== undefined ? prop.default : '');
+
+        if (prop.type === 'boolean') {
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.name = fieldName;
+            input.checked = !!val;
+            label.insertBefore(input, label.firstChild);
+            label.style.display = 'flex';
+            label.style.alignItems = 'center';
+            label.style.gap = 'var(--spacing-sm)';
+            label.style.cursor = 'pointer';
+        } else if (prop.type === 'integer' || prop.type === 'number') {
+            input = document.createElement('input');
+            input.type = 'number';
+            input.name = fieldName;
+            input.value = val;
+        } else if (prop.type === 'string' && prop.enum && Array.isArray(prop.enum)) {
+            input = document.createElement('select');
+            input.name = fieldName;
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Select --';
+            input.appendChild(emptyOpt);
+            prop.enum.forEach(function(opt) {
+                const option = document.createElement('option');
+                option.value = opt;
+                option.textContent = opt;
+                if (val === opt) option.selected = true;
+                input.appendChild(option);
+            });
+        } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.name = fieldName;
+            input.value = val;
+            if (prop.placeholder) input.placeholder = prop.placeholder;
+        }
+
+        if (input && input !== label.firstChild) {
+            field.appendChild(input);
+        }
+
+        if (prop.description) {
+            const desc = document.createElement('span');
+            desc.className = 'field-desc';
+            desc.textContent = prop.description;
+            field.appendChild(desc);
+        }
+        if (prop.pattern) {
+            const pat = document.createElement('span');
+            pat.className = 'field-pattern';
+            pat.textContent = 'Pattern: ' + prop.pattern;
+            field.appendChild(pat);
+        }
+
+        return field;
+    }
+
+    function renderObjectFields(schema, config, path, container, rootSchema) {
+        if (!schema || typeof schema !== 'object') return;
+        schema = normalizeProp(schema, rootSchema || schema);
+
+        const props = schema.properties || {};
+        const required = new Set(schema.required || []);
+
+        for (const key of Object.keys(props)) {
+            const raw = props[key];
+            const prop = normalizeProp(raw, rootSchema || schema);
+            const value = config && typeof config === 'object' ? config[key] : undefined;
+
+            if (!prop || typeof prop !== 'object') continue;
+
+            if (prop.type === 'object' && prop.properties) {
+                const group = document.createElement('fieldset');
+                group.className = 'config-field-group' + (path.length > 0 ? ' nested' : '');
+                const legend = document.createElement('legend');
+                legend.textContent = prop.title || key;
+                if (required.has(key)) legend.textContent += ' *';
+                group.appendChild(legend);
+
+                if (prop.description) {
+                    const desc = document.createElement('div');
+                    desc.className = 'schema-desc';
+                    desc.textContent = prop.description;
+                    desc.style.marginBottom = 'var(--spacing-sm)';
+                    group.appendChild(desc);
+                }
+
+                renderObjectFields(prop, value || {}, path.concat(key), group, rootSchema || schema);
+                container.appendChild(group);
+            } else if (prop.type === 'array') {
+                // Arrays fall back to raw JSON textarea inside the group
+                const group = document.createElement('fieldset');
+                group.className = 'config-field-group' + (path.length > 0 ? ' nested' : '');
+                const legend = document.createElement('legend');
+                legend.textContent = prop.title || key;
+                if (required.has(key)) legend.textContent += ' *';
+                group.appendChild(legend);
+
+                const ta = document.createElement('textarea');
+                ta.className = 'config-raw-textarea';
+                ta.name = makeFieldName(path.concat(key));
+                ta.rows = 4;
+                ta.value = JSON.stringify(value || [], null, 2);
+                group.appendChild(ta);
+
+                if (prop.description) {
+                    const desc = document.createElement('div');
+                    desc.className = 'schema-desc';
+                    desc.textContent = prop.description;
+                    group.appendChild(desc);
+                }
+                container.appendChild(group);
+            } else {
+                container.appendChild(renderInput(key, prop, value, path, required));
+            }
+        }
+    }
+
+    function buildForm(schema, config) {
+        schemaFormContainer.innerHTML = '';
+        if (!schema || typeof schema !== 'object') return;
+
+        if (schema.title) {
+            const title = document.createElement('div');
+            title.className = 'schema-title';
+            title.textContent = schema.title;
+            schemaMetaContainer.appendChild(title);
+        }
+        if (schema.description) {
+            const desc = document.createElement('div');
+            desc.className = 'schema-desc';
+            desc.textContent = schema.description;
+            schemaMetaContainer.appendChild(desc);
+        }
+        if (schema.required && schema.required.length > 0) {
+            const req = document.createElement('div');
+            req.className = 'schema-desc';
+            req.innerHTML = '<strong>Required:</strong> ' + schema.required.join(', ');
+            schemaMetaContainer.appendChild(req);
+        }
+
+        renderObjectFields(schema, config || {}, [], schemaFormContainer, schema);
+    }
+
+    function collectConfig(schema, formEl, rootSchema) {
+        if (!schema || typeof schema !== 'object') return {};
+        schema = normalizeProp(schema, rootSchema || schema);
+
+        const result = {};
+        const props = schema.properties || {};
+        const required = new Set(schema.required || []);
+
+        for (const key of Object.keys(props)) {
+            const raw = props[key];
+            const prop = normalizeProp(raw, rootSchema || schema);
+            if (!prop || typeof prop !== 'object') continue;
+
+            const fieldName = makeFieldName([key]);
+            const input = formEl.querySelector('[name="' + fieldName + '"]');
+            if (!input) continue;
+
+            if (prop.type === 'object' && prop.properties) {
+                result[key] = collectConfig(prop, formEl, rootSchema || schema);
+            } else if (prop.type === 'array') {
+                try {
+                    result[key] = JSON.parse(input.value);
+                } catch (e) {
+                    result[key] = [];
+                }
+            } else if (prop.type === 'boolean') {
+                result[key] = input.checked;
+            } else if (prop.type === 'integer') {
+                result[key] = input.value === '' ? null : parseInt(input.value, 10);
+            } else if (prop.type === 'number') {
+                result[key] = input.value === '' ? null : parseFloat(input.value);
+            } else {
+                result[key] = input.value;
+            }
+        }
+        return result;
+    }
+
+    function updateConfigUI() {
+        const rtId = resourceTypeSelect.value;
+        const schema = rtId ? SCHEMAS[rtId] : null;
+        const existingConfig = Object.keys(INITIAL_CONFIG).length > 0 ? INITIAL_CONFIG : null;
+
+        schemaMetaContainer.innerHTML = '';
+        schemaFormContainer.innerHTML = '';
+
+        if (schema && typeof schema === 'object') {
+            buildForm(schema, existingConfig);
+        } else {
+            // No schema selected: show raw textarea
+            const ta = document.createElement('textarea');
+            ta.className = 'config-raw-textarea';
+            ta.id = 'raw-config-fallback';
+            ta.value = JSON.stringify(existingConfig || {}, null, 2);
+            schemaFormContainer.appendChild(ta);
+        }
+    }
+
+    resourceTypeSelect.addEventListener('change', function() {
+        INITIAL_CONFIG = {};
+        updateConfigUI();
+    });
+
+    form.addEventListener('submit', function(e) {
+        const rtId = resourceTypeSelect.value;
+        const schema = rtId ? SCHEMAS[rtId] : null;
+        if (schema && typeof schema === 'object') {
+            const result = collectConfig(schema, schemaFormContainer, schema);
+            configTextarea.value = JSON.stringify(result, null, 2);
+        } else {
+            const raw = schemaFormContainer.querySelector('#raw-config-fallback');
+            if (raw) configTextarea.value = raw.value;
+        }
+    });
+
+    updateConfigUI();
+})();
+</script>
+{% endblock %}

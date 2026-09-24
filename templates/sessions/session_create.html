@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+
+{% block title %}New Troubleshooting Session - Vogon{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 640px; margin: var(--spacing-xl) auto;">
+    <h2 class="card-title">Start Troubleshooting</h2>
+    <form method="post" action="{% url 'sessions:session-create' %}">
+        {% csrf_token %}
+        <div style="margin-bottom: var(--spacing-md);">
+            <label for="title" style="display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: var(--spacing-xs);">Session Title</label>
+            <input type="text" id="title" name="title" class="form-control" placeholder="e.g., API Latency Investigation" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Create Session</button>
+    </form>
+</div>
+{% endblock %}

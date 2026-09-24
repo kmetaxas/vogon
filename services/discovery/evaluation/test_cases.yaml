@@ -1,0 +1,296 @@
+test_cases:
+  # Exact technical queries
+  - id: exact_kubernetes_pod_logs
+    query: "kubernetes.pod.logs"
+    filters: {}
+    expected:
+      - name: kubernetes.pod.logs
+        relevance: 1.0
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: exact_promql
+    query: "PromQL"
+    filters: {}
+    expected:
+      - name: prometheus.query
+        relevance: 1.0
+    not_expected: []
+
+  # Intent-based natural language queries
+  - id: kafka_consumer_falling_behind
+    query: "why is this Kafka consumer falling behind?"
+    filters: {}
+    expected:
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.describe
+        relevance: 1.0
+      - name: kafka.consumer_group.members
+        relevance: 0.7
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: consumer_stuck_partitions
+    query: "consumer appears stuck on some partitions"
+    filters: {}
+    expected:
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.describe
+        relevance: 1.0
+    not_expected:
+      - kubernetes.event.list
+
+  - id: dns_resolution_intent
+    query: "check whether Kafka brokers can resolve schema registry"
+    filters: {}
+    expected:
+      - name: network.dns.resolve
+        relevance: 1.0
+      - name: network.socket.connect
+        relevance: 0.5
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: pods_repeatedly_dying
+    query: "are pods repeatedly dying?"
+    filters: {}
+    expected:
+      - name: kubernetes.pod.list
+        relevance: 1.0
+      - name: kubernetes.event.list
+        relevance: 1.0
+    not_expected:
+      - kafka.consumer_group.offsets
+
+  # Synonym queries
+  - id: disk_usage_synonym
+    query: "check disk usage"
+    filters: {}
+    expected:
+      - name: linux.system.disk.free
+        relevance: 1.0
+      - name: linux.system.disk.usage
+        relevance: 1.0
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: consumer_lag_synonym
+    query: "consumer lag investigation"
+    filters: {}
+    expected:
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.describe
+        relevance: 0.8
+    not_expected:
+      - network.dns.resolve
+
+  # Vague queries
+  - id: something_wrong_network
+    query: "something is wrong with the network"
+    filters: {}
+    expected:
+      - name: network.dns.resolve
+        relevance: 0.5
+      - name: network.socket.connect
+        relevance: 0.5
+      - name: network.ping
+        relevance: 0.5
+      - name: network.tls.check
+        relevance: 0.3
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: infrastructure_monitoring
+    query: "monitoring for infrastructure"
+    filters: {}
+    expected:
+      - name: prometheus.query
+        relevance: 0.7
+      - name: linux.system.info
+        relevance: 0.5
+    not_expected:
+      - kafka.consumer_group.offsets
+
+  # Provider-specific queries
+  - id: kafka_broker_health
+    query: "check Kafka broker health"
+    filters: {}
+    expected:
+      - name: kafka.cluster.describe
+        relevance: 1.0
+      - name: kafka.broker.metrics
+        relevance: 1.0
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: azure_load_balancer
+    query: "Azure load balancer health"
+    filters: {}
+    expected:
+      - name: azure.lb.health
+        relevance: 1.0
+      - name: azure.lb.rules
+        relevance: 0.7
+    not_expected:
+      - network.dns.resolve
+
+  # Cross-provider queries
+  - id: connectivity_check
+    query: "test connectivity between services"
+    filters: {}
+    expected:
+      - name: network.socket.connect
+        relevance: 1.0
+      - name: network.ping
+        relevance: 0.8
+      - name: kubernetes.service.endpoints
+        relevance: 0.5
+    not_expected:
+      - kafka.consumer_group.offsets
+
+  # Multi-capability scenarios
+  - id: investigate_consumer_group
+    query: "Investigate why consumer group payment-api isn't consuming"
+    filters: {}
+    expected:
+      - name: kafka.consumer_group.describe
+        relevance: 1.0
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.members
+        relevance: 0.7
+    not_expected:
+      - kubernetes.pod.list
+
+  # Negative / confusing cases
+  - id: kubernetes_kafka_confusion
+    query: "kafka pods not running"
+    filters: {}
+    expected:
+      - name: kubernetes.pod.list
+        relevance: 1.0
+      - name: kubernetes.event.list
+        relevance: 0.8
+    not_expected:
+      - kafka.consumer_group.offsets
+
+  - id: dns_vs_tls_confusion
+    query: "secure connection to database"
+    filters: {}
+    expected:
+      - name: network.tls.check
+        relevance: 1.0
+      - name: network.socket.connect
+        relevance: 0.5
+    not_expected:
+      - network.dns.resolve
+
+  # Abbreviation and shorthand queries
+  - id: k8s_pods
+    query: "k8s pods"
+    filters: {}
+    expected:
+      - name: kubernetes.pod.list
+        relevance: 1.0
+      - name: kubernetes.pod.logs
+        relevance: 0.8
+    not_expected:
+      - kafka.consumer_group.offsets
+
+  - id: lb_health_shorthand
+    query: "lb health"
+    filters: {}
+    expected:
+      - name: azure.lb.health
+        relevance: 1.0
+      - name: azure.lb.rules
+        relevance: 0.5
+    not_expected:
+      - network.dns.resolve
+
+  # Troubleshooting workflow queries
+  - id: memory_leak
+    query: "investigate memory leak on host"
+    filters: {}
+    expected:
+      - name: linux.process.list
+        relevance: 1.0
+      - name: linux.system.info
+        relevance: 0.8
+      - name: linux.system.memory.info
+        relevance: 1.0
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: certificate_expiry
+    query: "check if TLS certificate is expiring soon"
+    filters: {}
+    expected:
+      - name: network.tls.check
+        relevance: 1.0
+    not_expected:
+      - network.dns.resolve
+
+  # Partial / incomplete queries
+  - id: partial_kafka
+    query: "kafka consumer"
+    filters: {}
+    expected:
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.describe
+        relevance: 1.0
+      - name: kafka.consumer_group.members
+        relevance: 0.8
+    not_expected:
+      - kubernetes.pod.list
+
+  # Filtered queries
+  - id: kafka_filtered
+    query: "consumer lag"
+    filters:
+      providers:
+        - kafka
+    expected:
+      - name: kafka.consumer_group.offsets
+        relevance: 1.0
+      - name: kafka.consumer_group.describe
+        relevance: 0.8
+    not_expected:
+      - kubernetes.pod.list
+
+  - id: network_filtered
+    query: "connectivity"
+    filters:
+      providers:
+        - network
+    expected:
+      - name: network.socket.connect
+        relevance: 1.0
+      - name: network.ping
+        relevance: 0.8
+      - name: network.dns.resolve
+        relevance: 0.3
+    not_expected:
+      - kubernetes.pod.list
+
+  # Edge cases
+  - id: empty_query_like
+    query: ""
+    filters:
+      providers:
+        - kafka
+    expected: []
+    not_expected: []
+
+  - id: very_specific_technical
+    query: "kubernetes.clusterrolebinding.get"
+    filters: {}
+    expected:
+      - name: kubernetes.clusterrolebinding.get
+        relevance: 1.0
+    not_expected:
+      - kubernetes.clusterrole.get

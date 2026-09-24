@@ -1,0 +1,149 @@
+{% load marvin_config_tags %}
+
+<div id="marvin-config-panel">
+    {% if error %}
+    <div class="badge badge-offline" style="margin-bottom: var(--spacing-md); display: inline-block;">{{ error }}</div>
+    {% endif %}
+
+    <details class="config-section" style="margin-bottom: var(--spacing-md);">
+        <summary style="font-weight: 600; cursor: pointer; padding: var(--spacing-sm) 0; list-style: none; display: flex; align-items: center; gap: var(--spacing-sm);">
+            <span style="font-size: 0.75rem; color: var(--color-text-secondary);">&#9654;</span>
+            Global Settings
+        </summary>
+        <form method="post" action="{% url 'marvins:marvin-config-update' marvin.id %}"
+              hx-post="{% url 'marvins:marvin-config-update' marvin.id %}"
+              hx-target="#marvin-config-panel"
+              hx-swap="outerHTML"
+              style="margin-top: var(--spacing-sm); padding-left: var(--spacing-md);">
+            {% csrf_token %}
+            <div style="margin-bottom: var(--spacing-md);">
+                <label style="display: block; margin-bottom: var(--spacing-xs); font-size: 0.875rem; color: var(--color-text-secondary);">Global Config (JSON)</label>
+                <textarea name="global_config" rows="4" class="form-control" style="font-family: monospace;">{{ marvin.online_config.global_config|default:'{}'|json_script:"global-config" }}</textarea>
+                <script>
+                    (function() {
+                        const el = document.querySelector('textarea[name="global_config"]');
+                        const raw = document.getElementById('global-config');
+                        if (raw && el) {
+                            el.value = JSON.stringify(JSON.parse(raw.textContent), null, 2);
+                            raw.remove();
+                        }
+                    })();
+                </script>
+            </div>
+            <button type="submit" class="btn btn-primary">Save Global Config</button>
+        </form>
+    </details>
+
+    {% load marvin_config_tags %}
+    {% get_overridden_capabilities capabilities marvin.online_config.capability_overrides as overridden_caps %}
+
+    <div style="display: flex; justify-content: space-between; align-items: center; margin: var(--spacing-lg) 0 var(--spacing-md);">
+        <h3 style="margin: 0; font-size: 1rem; font-weight: 600;">Capability Overrides</h3>
+        {% if capabilities %}
+        <span class="badge badge-warning">{{ overridden_caps|length }} of {{ capabilities|length }} overridden</span>
+        {% endif %}
+    </div>
+
+    {% if capabilities %}
+        <div style="display: flex; gap: var(--spacing-md); align-items: center; margin-bottom: var(--spacing-md); flex-wrap: wrap;">
+            <input type="text"
+                   id="capability-search"
+                   placeholder="Search capabilities..."
+                   class="form-control"
+                   style="flex: 1; min-width: 200px;"
+                   oninput="filterCapabilities()">
+            <label style="display: flex; align-items: center; gap: var(--spacing-sm); font-size: 0.875rem; cursor: pointer; white-space: nowrap;">
+                <input type="checkbox" id="overridden-only-toggle" onchange="filterCapabilities()">
+                Show overridden only
+            </label>
+        </div>
+
+        <script>
+            function filterCapabilities() {
+                var search = document.getElementById('capability-search').value.toLowerCase();
+                var overriddenOnly = document.getElementById('overridden-only-toggle').checked;
+                var panels = document.querySelectorAll('.capability-override-panel');
+                panels.forEach(function(panel) {
+                    var name = panel.dataset.capabilityName.toLowerCase();
+                    var isOverridden = panel.dataset.hasOverride === 'true';
+                    var matchesSearch = name.indexOf(search) !== -1;
+                    var matchesToggle = !overriddenOnly || isOverridden;
+                    panel.style.display = (matchesSearch && matchesToggle) ? '' : 'none';
+                });
+            }
+        </script>
+
+        {% for cap in capabilities %}
+            {% get_capability_form cap marvin.online_config.capability_overrides as cap_form %}
+            <details class="capability-override-panel {% if cap_form.has_override %}is-overridden{% endif %}"
+                    data-capability-name="{{ cap.name }}"
+                    data-has-override="{% if cap_form.has_override %}true{% else %}false{% endif %}"
+                    {% if cap_form.has_override %}open{% endif %}
+                    style="margin-bottom: var(--spacing-sm); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--spacing-sm) var(--spacing-md);">
+                <summary style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none;">
+                    <span style="font-weight: 500;">{{ cap.name }}</span>
+                    {% if cap_form.has_override %}
+                        <span class="badge badge-warning" style="margin-left: var(--spacing-sm);">Overridden</span>
+                    {% endif %}
+                </summary>
+                <form method="post" action="{% url 'marvins:marvin-config-update' marvin.id %}"
+                      hx-post="{% url 'marvins:marvin-config-update' marvin.id %}"
+                      hx-target="#marvin-config-panel"
+                      hx-swap="outerHTML"
+                      style="margin-top: var(--spacing-md);">
+                    {% csrf_token %}
+                    <input type="hidden" name="_capability_name" value="{{ cap.name }}">
+
+                    {% for field in cap_form.fields %}
+                        <div style="margin-bottom: var(--spacing-md);">
+                            <label style="display: block; margin-bottom: var(--spacing-xs); font-size: 0.875rem; font-weight: 500;">
+                                {{ field.title }}
+                            </label>
+                            {% if field.description %}
+                                <div style="font-size: 0.75rem; color: var(--color-text-secondary); margin-bottom: var(--spacing-xs);">{{ field.description }}</div>
+                            {% endif %}
+
+                            <input type="hidden" name="cap_field_type_{{ field.name }}" value="{{ field.type }}">
+                            {% if field.type == "boolean" %}
+                                <input type="hidden" name="cap_field_{{ field.name }}" value="false">
+                                <label style="display: flex; align-items: center; gap: var(--spacing-sm); cursor: pointer;">
+                                    <input type="checkbox" name="cap_field_{{ field.name }}" value="true"
+                                           {% if field.current_value %}checked{% endif %}
+                                           style="width: 18px; height: 18px;">
+                                    <span style="font-size: 0.875rem;">Enabled</span>
+                                </label>
+                            {% elif field.type == "enum" %}
+                                <select name="cap_field_{{ field.name }}" class="form-control">
+                                    {% for choice in field.choices %}
+                                        <option value="{{ choice }}" {% if field.current_value == choice %}selected{% endif %}>{{ choice }}</option>
+                                    {% endfor %}
+                                </select>
+                            {% elif field.type == "integer" or field.type == "number" %}
+                                <input type="number" name="cap_field_{{ field.name }}"
+                                       value="{{ field.current_value }}"
+                                       class="form-control"
+                                       {% if field.type == "integer" %}step="1"{% else %}step="any"{% endif %}>
+                            {% else %}
+                                <input type="text" name="cap_field_{{ field.name }}"
+                                       value="{{ field.current_value }}"
+                                       class="form-control"
+                                       placeholder="Default: {{ field.default }}">
+                            {% endif %}
+                        </div>
+                    {% empty %}
+                        <p style="color: var(--color-text-secondary); font-size: 0.875rem;">No configurable parameters for this capability.</p>
+                    {% endfor %}
+
+                    <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+                        <button type="submit" class="btn btn-primary">Save Override</button>
+                        {% if cap_form.has_override %}
+                            <button type="submit" name="_clear_override" value="1" class="btn btn-secondary">Clear Override</button>
+                        {% endif %}
+                    </div>
+                </form>
+            </details>
+        {% endfor %}
+    {% else %}
+        <p class="empty-state">No capabilities registered.</p>
+    {% endif %}
+</div>

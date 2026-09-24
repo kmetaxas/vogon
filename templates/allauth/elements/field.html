@@ -1,0 +1,23 @@
+{% load allauth %}
+{{ attrs.errors }}
+{% if attrs.type == "textarea" %}
+    <div class="field-group">
+        <label for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+        <textarea class="form-control"{% if attrs.required %} required{% endif %}{% if attrs.rows %} rows="{{ attrs.rows }}"{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.checked %} checked{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}>{% slot value %}{% endslot %}</textarea>
+        {% if slots.help_text %}<span class="helptext">{% slot help_text %}{% endslot %}</span>{% endif %}
+    </div>
+{% else %}
+    {% if attrs.type == "checkbox" or attrs.type == "radio" %}
+        <div class="field-group checkbox-group">
+            <input{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.checked %} checked{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.autocomplete %} autocomplete="{{ attrs.autocomplete }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %} type="{{ attrs.type }}">
+            <label for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+        </div>
+        {% if slots.help_text %}<span class="helptext">{% slot help_text %}{% endslot %}</span>{% endif %}
+    {% else %}
+        <div class="field-group">
+            <label for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+            <input class="form-control"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.checked %} checked{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.autocomplete %} autocomplete="{{ attrs.autocomplete }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %} type="{{ attrs.type }}">
+            {% if slots.help_text %}<span class="helptext">{% slot help_text %}{% endslot %}</span>{% endif %}
+        </div>
+    {% endif %}
+{% endif %}

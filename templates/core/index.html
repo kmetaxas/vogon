@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard - Vogon{% endblock %}
+
+{% block content %}
+<h1>Welcome to Vogon</h1>
+<p>AI troubleshooting control plane.</p>
+
+{% if user.is_authenticated %}
+<div hx-get="/api/sessions/" hx-trigger="load">
+    <p>Loading sessions...</p>
+</div>
+{% else %}
+<p>Please <a href="/accounts/login/">login</a> to get started.</p>
+{% endif %}
+{% endblock %}

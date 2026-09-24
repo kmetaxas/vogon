@@ -1,0 +1,134 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ organization.name }} - Organization - Vogon{% endblock %}
+
+{% block content %}
+<h1>{{ organization.name }}</h1>
+
+{% if messages %}
+<div class="messages">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="org-detail-grid">
+    <div class="card">
+        <h2 class="card-title">Organization details</h2>
+        {% if is_admin %}
+        <form method="post" action="{% url 'core:org-detail' %}">
+            {% csrf_token %}
+            <div class="form-group">
+                <label for="id_name">Name</label>
+                <input type="text" name="name" id="id_name" class="form-control" value="{{ organization.name }}" required>
+            </div>
+            <div class="form-group">
+                <label for="id_slug">Slug</label>
+                <input type="text" class="form-control" value="{{ organization.slug }}" disabled>
+            </div>
+            <div class="form-group">
+                <label for="id_email_domain">Email domain restriction <span class="text-muted">(optional)</span></label>
+                <input type="text" name="email_domain" id="id_email_domain" class="form-control" value="{{ organization.email_domain }}">
+                <p class="form-help">If set, only users with an email address at this domain can join.</p>
+            </div>
+            <button type="submit" class="btn btn-primary">Save changes</button>
+        </form>
+        {% else %}
+        <dl class="org-details">
+            <dt>Name</dt>
+            <dd>{{ organization.name }}</dd>
+            <dt>Slug</dt>
+            <dd>{{ organization.slug }}</dd>
+            {% if organization.email_domain %}
+            <dt>Email domain</dt>
+            <dd>@{{ organization.email_domain }}</dd>
+            {% endif %}
+            <dt>Your role</dt>
+            <dd><span class="badge">{{ membership.get_role_display }}</span></dd>
+        </dl>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">Members</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Role</th>
+                    <th>Joined</th>
+                    {% if is_admin %}<th>Actions</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for member in members %}
+                <tr>
+                    <td>{{ member.user.username }}</td>
+                    <td><span class="badge">{{ member.get_role_display }}</span></td>
+                    <td>{{ member.joined_at|date:"Y-m-d" }}</td>
+                    {% if is_admin %}
+                    <td>
+                        {% if member.user != request.user and member.role != 'owner' %}
+                        <form method="post" action="{% url 'core:org-member-role-update' member.user.id %}" style="display:inline-block;margin-right:0.5rem;">
+                            {% csrf_token %}
+                            <select name="role" onchange="this.form.submit()">
+                                {% for role_value, role_label in membership.Role.choices %}
+                                <option value="{{ role_value }}" {% if member.role == role_value %}selected{% endif %}>{{ role_label }}</option>
+                                {% endfor %}
+                            </select>
+                        </form>
+                        <form method="post" action="{% url 'core:org-member-remove' member.user.id %}" style="display:inline-block;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Remove {{ member.user.username }}?')">Remove</button>
+                        </form>
+                        {% elif member.user == request.user %}
+                        <span class="text-muted">You</span>
+                        {% else %}
+                        <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if is_admin %}
+    <div class="card">
+        <h2 class="card-title">Invite members</h2>
+        <form method="post" action="{% url 'core:org-invite' %}">
+            {% csrf_token %}
+            <div class="form-group">
+                <label for="id_email">Email address</label>
+                <input type="email" name="email" id="id_email" class="form-control" required placeholder="colleague@example.com">
+            </div>
+            <button type="submit" class="btn btn-primary">Send invitation</button>
+        </form>
+
+        {% if invitations %}
+        <h3 class="mt-lg">Pending invitations</h3>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Email</th>
+                    <th>Sent</th>
+                    <th>By</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for inv in invitations %}
+                <tr>
+                    <td>{{ inv.email }}</td>
+                    <td>{{ inv.created_at|date:"Y-m-d" }}</td>
+                    <td>{{ inv.created_by.username }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

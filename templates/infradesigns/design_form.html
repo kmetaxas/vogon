@@ -1,0 +1,165 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block title %}{% if is_create %}New Design{% else %}Edit {{ design.name }}{% endif %} - Vogon{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/infra_designs.css' %}">
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+(function() {
+  var input = document.getElementById('mermaid-input');
+  var preview = document.getElementById('mermaid-preview');
+  var timer = null;
+
+  function render() {
+    if (!input || !preview) return;
+    var src = input.value.trim();
+    if (!src) { preview.innerHTML = '<div class="empty-preview">Start typing a mermaid diagram...</div>'; return; }
+    preview.innerHTML = '<div class="mermaid">' + src + '</div>';
+    mermaid.init(undefined, preview.querySelectorAll('.mermaid'));
+  }
+
+  if (input) {
+    input.addEventListener('input', function() {
+      clearTimeout(timer);
+      timer = setTimeout(render, 300);
+    });
+    render();
+  }
+
+  var selectorBuilder = document.getElementById('selector-builder');
+  var selectorJson = document.getElementById('marvin-selector-json');
+  var addBtn = document.getElementById('selector-add-btn');
+
+  function collectLabels() {
+    var rows = selectorBuilder.querySelectorAll('.selector-row');
+    var labels = {};
+    rows.forEach(function(row) {
+      var k = row.querySelector('.selector-key').value.trim();
+      var v = row.querySelector('.selector-val').value.trim();
+      if (k) labels[k] = v;
+    });
+    return labels;
+  }
+
+  function updateJson() {
+    selectorJson.value = JSON.stringify({ labels: collectLabels() });
+  }
+
+  function bindRow(row) {
+    row.querySelector('.selector-key').addEventListener('input', updateJson);
+    row.querySelector('.selector-val').addEventListener('input', updateJson);
+    row.querySelector('.selector-remove').addEventListener('click', function() {
+      row.remove();
+      updateJson();
+    });
+  }
+
+  if (addBtn && selectorBuilder) {
+    addBtn.addEventListener('click', function() {
+      var row = document.createElement('div');
+      row.className = 'selector-row';
+      row.innerHTML = '<input type="text" class="selector-key form-control" placeholder="e.g. env">' +
+        '<input type="text" class="selector-val form-control" placeholder="e.g. production">' +
+        '<button type="button" class="selector-remove btn btn-icon" title="Remove">&times;</button>';
+      selectorBuilder.appendChild(row);
+      bindRow(row);
+      updateJson();
+    });
+  }
+
+  if (selectorBuilder) {
+    var existingRows = selectorBuilder.querySelectorAll('.selector-row');
+    existingRows.forEach(bindRow);
+  }
+})();
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="design-form-wrapper">
+  <div class="design-form-header">
+    <h1 class="design-form-title">{% if is_create %}New Infrastructure Design{% else %}Edit {{ design.name }}{% endif %}</h1>
+    <a href="{% url 'infradesigns:design-list' %}" class="btn btn-secondary">&larr; Back to Designs</a>
+  </div>
+
+  {% if error %}
+  <div class="design-form-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post"
+        action="{% if is_create %}{% url 'infradesigns:design-create' %}{% else %}{% url 'infradesigns:design-edit' design.id %}{% endif %}"
+        class="design-form">
+    {% csrf_token %}
+
+    <div class="form-group">
+      <label class="form-label">Name <span class="required">*</span></label>
+      <input type="text" name="name" class="form-control" value="{{ design.name|default:'' }}" placeholder="e.g. Production Kafka Cluster" required>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group form-group-half">
+        <label class="form-label">Environment</label>
+        <select name="environment" class="form-control">
+          {% for val, label in environment_choices %}
+          <option value="{{ val }}" {% if design.environment == val %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea name="description" class="form-control" rows="4" placeholder="Describe what this infrastructure contains and how it is used...">{{ design.description|default:'' }}</textarea>
+      <div class="form-help">Used for LLM semantic search. Be specific about components and their relationships.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Mermaid Topology</label>
+      <div class="mermaid-editor">
+        <div class="mermaid-input-col">
+          <textarea id="mermaid-input" name="mermaid_topology" class="form-control mermaid-code" rows="14" placeholder="graph TD&#10;    A[API Gateway] --&gt; B[Auth Service]&#10;    A --&gt; C[Payment Service]">{{ design.mermaid_topology|default:'' }}</textarea>
+          <div class="form-help">Real-time preview on the right. Supports all Mermaid diagram types.</div>
+        </div>
+        <div class="mermaid-preview-col">
+          <div id="mermaid-preview" class="mermaid-preview-box">
+            <div class="empty-preview">Start typing a mermaid diagram...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Marvin Selector</label>
+      <div id="selector-builder" class="selector-builder">
+        {% if design.marvin_selector and design.marvin_selector.labels %}
+          {% for k, v in design.marvin_selector.labels.items %}
+          <div class="selector-row">
+            <input type="text" class="selector-key form-control" placeholder="e.g. env" value="{{ k }}">
+            <input type="text" class="selector-val form-control" placeholder="e.g. production" value="{{ v }}">
+            <button type="button" class="selector-remove btn btn-icon" title="Remove">&times;</button>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="selector-row">
+            <input type="text" class="selector-key form-control" placeholder="e.g. env">
+            <input type="text" class="selector-val form-control" placeholder="e.g. production">
+            <button type="button" class="selector-remove btn btn-icon" title="Remove">&times;</button>
+          </div>
+        {% endif %}
+      </div>
+      <button type="button" id="selector-add-btn" class="btn btn-sm btn-secondary">+ Add Label</button>
+      <input type="hidden" name="marvin_selector" id="marvin-selector-json" value='{{ design.marvin_selector|default:"{}"|safe }}'>
+      <div class="form-help">Key-value labels used by the LLM to find matching Marvin agents.</div>
+    </div>
+
+    <div class="design-form-actions">
+      <button type="submit" class="btn btn-primary btn-lg">{% if is_create %}Create Design{% else %}Save Changes{% endif %}</button>
+      <a href="{% url 'infradesigns:design-list' %}" class="btn btn-secondary btn-lg">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

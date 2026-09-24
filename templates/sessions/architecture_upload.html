@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+
+{% block title %}Architecture Upload - {{ session.title }}{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width: 800px; margin: var(--spacing-xl) auto;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-lg);">
+        <h2 class="card-title" style="margin: 0;">Architecture Upload</h2>
+        <a href="{% url 'sessions:session-detail' session.id %}" class="btn btn-secondary">&larr; Back to Session</a>
+    </div>
+
+    <p style="color: var(--color-text-secondary); margin-bottom: var(--spacing-lg);">
+        Upload architecture diagrams or markdown to fulfill LLM requests for this troubleshooting session.
+    </p>
+
+    {% if open_requests %}
+    <div style="margin-bottom: var(--spacing-lg);">
+        <h3 style="font-size: 1rem; margin-bottom: var(--spacing-md);">Open Requests</h3>
+        {% for req in open_requests %}
+        <div style="border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--spacing-md); margin-bottom: var(--spacing-md);">
+            <div style="font-size: 0.875rem; color: var(--color-text-secondary); margin-bottom: var(--spacing-sm);">
+                Requested {{ req.created_at|timesince }} ago
+            </div>
+            <p style="margin-bottom: var(--spacing-md);">{{ req.description }}</p>
+
+            <form method="post"
+                  action="{% url 'sessions:architecture-upload' session.id %}"
+                  enctype="multipart/form-data">
+                {% csrf_token %}
+                <input type="hidden" name="request_id" value="{{ req.id }}">
+
+                <div style="margin-bottom: var(--spacing-md);">
+                    <label style="display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: var(--spacing-xs);">
+                        Diagram (image)
+                    </label>
+                    <input type="file" name="diagram" accept="image/*" class="form-control">
+                </div>
+
+                <div style="margin-bottom: var(--spacing-md);">
+                    <label style="display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: var(--spacing-xs);">
+                        Markdown Description
+                    </label>
+                    <textarea name="markdown" rows="6" class="form-control" placeholder="Enter architecture description in Markdown..."></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Fulfill Request</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div style="text-align: center; padding: var(--spacing-xl); color: var(--color-text-secondary);">
+        <p>No open architecture requests for this session.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

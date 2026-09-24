@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block title %}Resources - Vogon{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-md);">
+    <h1 style="margin: 0;">Resources</h1>
+    <a href="{% url 'marvins:resource-create' %}" class="btn btn-primary">+ New Resource</a>
+</div>
+
+<div class="card">
+    {% if resources %}
+    <div class="session-list">
+        {% for resource in resources %}
+        <a href="{% url 'marvins:resource-edit' resource.id %}" class="session-item">
+            <div>
+                <div class="session-item-title">{{ resource.name }}</div>
+                <div class="session-item-meta">
+                    {{ resource.resource_type.display_name }} &middot;
+                    {% if resource.enabled %}<span class="badge badge-online">enabled</span>{% else %}<span class="badge badge-offline">disabled</span>{% endif %}
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">No resources configured yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

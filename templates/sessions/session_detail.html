@@ -1,0 +1,244 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ session.title }} - Vogon{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'css/thread_ui.css' %}">
+<link rel="stylesheet" href="{% static 'css/infra_designs.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="session-layout">
+  {% include 'sessions/_thread_nav.html' %}
+
+  <main class="session-primary" id="primary-chat">
+    {% include 'sessions/_thread_pane.html' with thread=primary_thread is_primary=True %}
+  </main>
+
+  {% include 'sessions/_following_region.html' %}
+</div>
+<div class="ws-status" id="ws-status" aria-live="polite"></div>
+
+<script>
+(function() {
+    var wsProto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var wsUrl = wsProto + window.location.host + '/ws/sessions/{{ session.id }}/';
+    var ws = null;
+    var reconnectAttempts = 0;
+    var reconnectTimer = null;
+    var wsStatus = document.getElementById('ws-status');
+
+    var activeThreadId = '{{ primary_thread.id }}';
+
+    function scrollActiveThreadToBottom() {
+        var msgDiv = document.getElementById('thread-messages-' + activeThreadId);
+        if (msgDiv) msgDiv.scrollTop = msgDiv.scrollHeight;
+    }
+
+    function setWsStatus(state, label) {
+        if (!wsStatus) return;
+        wsStatus.textContent = label;
+        wsStatus.className = 'ws-status is-visible is-' + state;
+        if (state === 'connected') {
+            setTimeout(function() {
+                if (wsStatus.classList.contains('is-connected')) {
+                    wsStatus.classList.remove('is-visible');
+                }
+            }, 1800);
+        }
+    }
+
+    function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectAttempts += 1;
+        var delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts - 1));
+        setWsStatus('reconnecting', 'Connection lost. Reconnecting in ' + Math.round(delay / 1000) + 's...');
+        reconnectTimer = setTimeout(function() {
+            reconnectTimer = null;
+            connectWebSocket();
+        }, delay);
+    }
+
+    function handleSocketMessage(event) {
+        var msg = JSON.parse(event.data);
+        if (msg.type === 'chat' && msg.thread_id) {
+            var threadId = String(msg.thread_id);
+            if (threadId !== activeThreadId) {
+                var navItem = document.querySelector('.thread-nav-item[data-thread-id="' + threadId + '"]');
+                if (navItem) navItem.classList.add('has-new');
+            }
+            var target = document.getElementById('thread-messages-' + threadId);
+            if (!target) {
+                var visiblePane = document.querySelector('.thread-pane[data-thread-id="' + threadId + '"]');
+                if (visiblePane) target = visiblePane.querySelector('[data-thread-messages="true"]');
+            }
+            if (target && msg.payload && msg.payload.html) {
+                recordOpenDetails(target);
+                target.innerHTML = msg.payload.html;
+                if (window.htmx) htmx.process(target);
+                restoreOpenDetails(target);
+                openDetailsState.clear();
+                if (threadId === activeThreadId) {
+                    scrollActiveThreadToBottom();
+                }
+            }
+            var card = document.getElementById('following-card-' + threadId);
+            if (card && msg.payload && msg.payload.card_html) {
+                card.outerHTML = msg.payload.card_html;
+                var newCard = document.getElementById('following-card-' + threadId);
+                if (newCard && window.htmx) htmx.process(newCard);
+            }
+        } else if (msg.type === 'status') {
+            var statusDiv = document.getElementById('session-status');
+            if (statusDiv) statusDiv.innerHTML = msg.payload.badge_html;
+        } else if (msg.type === 'thread_list') {
+            htmx.ajax('GET',
+                '/sessions/' + '{{ session.id }}' + '/threads/',
+                { target: '#thread-nav', swap: 'outerHTML' }
+            );
+        }
+    }
+
+    function connectWebSocket() {
+        ws = new WebSocket(wsUrl);
+        ws.onopen = function() {
+            reconnectAttempts = 0;
+            setWsStatus('connected', 'Live connection restored');
+        };
+        ws.onmessage = handleSocketMessage;
+        ws.onerror = function() {
+            if (ws) ws.close();
+        };
+        ws.onclose = scheduleReconnect;
+    }
+
+    // --- Preserve details open state across swaps ---
+    var openDetailsState = new Set();
+
+    function recordOpenDetails(container) {
+        var detailsList = container.querySelectorAll('details');
+        detailsList.forEach(function(d) {
+            if (d.open) {
+                var parent = d.closest('[data-created-at]');
+                if (parent) {
+                    openDetailsState.add(parent.getAttribute('data-created-at'));
+                }
+            }
+        });
+    }
+
+    function restoreOpenDetails(container) {
+        var parents = container.querySelectorAll('[data-created-at]');
+        parents.forEach(function(parent) {
+            var createdAt = parent.getAttribute('data-created-at');
+            if (openDetailsState.has(createdAt)) {
+                var details = parent.querySelectorAll('details');
+                details.forEach(function(d) { d.open = true; });
+            }
+        });
+    }
+
+    document.body.addEventListener('htmx:beforeSwap', function(evt) {
+        var target = evt.detail.target;
+        if (target && target.id && target.id.startsWith('thread-messages-')) {
+            recordOpenDetails(target);
+        }
+    });
+
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+        var pane = evt.detail.elt.classList && evt.detail.elt.classList.contains('thread-pane')
+            ? evt.detail.elt
+            : evt.detail.elt.querySelector('.thread-pane');
+        if (pane) {
+            activeThreadId = pane.getAttribute('data-thread-id');
+            scrollActiveThreadToBottom();
+        }
+        var target = evt.detail.target;
+        if (target && target.id && target.id.startsWith('thread-messages-')) {
+            restoreOpenDetails(target);
+            openDetailsState.clear();
+        }
+    });
+
+    document.addEventListener('DOMContentLoaded', scrollActiveThreadToBottom);
+
+    document.body.addEventListener('keydown', function(e) {
+        var input = e.target;
+        if (input && input.id === 'chat-input' && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            var form = document.getElementById('chat-form');
+            if (form) htmx.trigger(form, 'submit');
+        }
+    });
+
+    document.body.addEventListener('focusin', function(e) {
+        var input = e.target;
+        if (input && input.id === 'chat-input' && !input._hasResize) {
+            input._hasResize = true;
+            input.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+            });
+        }
+    });
+
+    connectWebSocket();
+
+    // --- Design reference picker ---
+    (function() {
+        var btn = document.getElementById('design-ref-btn');
+        if (!btn) return;
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var existing = document.getElementById('design-picker');
+            if (existing) { existing.remove(); return; }
+            var picker = document.createElement('div');
+            picker.id = 'design-picker';
+            picker.className = 'design-picker-dropdown';
+            picker.innerHTML = '<div style="padding:var(--spacing-md);text-align:center;color:var(--color-text-secondary);font-size:0.875rem;">Loading designs...</div>';
+            document.body.appendChild(picker);
+            var rect = btn.getBoundingClientRect();
+            picker.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+            picker.style.left = (rect.left + window.scrollX) + 'px';
+            fetch('/designs/?format=picker', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(function(r) { return r.text(); })
+                .then(function(html) {
+                    picker.innerHTML = html;
+                    if (window.htmx) htmx.process(picker);
+                })
+                .catch(function() {
+                    picker.innerHTML = '<div style="padding:var(--spacing-md);text-align:center;color:var(--color-danger);font-size:0.875rem;">Failed to load designs.</div>';
+                });
+        });
+        document.body.addEventListener('click', function(e) {
+            if (e.target.closest('#design-ref-btn')) return;
+            var picker = document.getElementById('design-picker');
+            if (picker && !e.target.closest('.design-picker-dropdown')) {
+                picker.remove();
+            }
+        });
+        document.body.addEventListener('click', function(e) {
+            var item = e.target.closest('.design-picker-item');
+            if (!item) return;
+            var designId = item.dataset.designId;
+            var input = document.getElementById('chat-input');
+            if (!input) return;
+            var ref = '[design:' + designId + ']';
+            input.value = (input.value ? input.value + ' ' : '') + ref;
+            input.focus();
+            var picker = document.getElementById('design-picker');
+            if (picker) picker.remove();
+        });
+    })();
+
+    document.body.addEventListener('htmx:afterRequest', function(evt) {
+        if (evt.detail.elt.id === 'chat-form') {
+            var input = document.getElementById('chat-input');
+            if (input) { input.value = ''; input.style.height = 'auto'; input.focus(); }
+            scrollActiveThreadToBottom();
+        }
+    });
+})();
+</script>
+{% endblock %}

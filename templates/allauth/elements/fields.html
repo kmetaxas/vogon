@@ -1,0 +1,11 @@
+{% load allauth %}
+{% for field in attrs.form.visible_fields %}
+    {% if attrs.unlabeled and field.field.widget.input_type != "checkbox" %}
+        {% element field id=field.id_for_label name=field.name value=field.value|default_if_none:"" errors=field.errors type=field.field.widget.input_type|default:"text" required=field.field.required %}
+        {% endelement %}
+    {% else %}
+        {% element field id=field.id_for_label name=field.name value=field.value|default_if_none:"" errors=field.errors type=field.field.widget.input_type|default:"text" required=field.field.required %}
+            {% slot label %}{{ field.label }}{% endslot %}
+        {% endelement %}
+    {% endif %}
+{% endfor %}

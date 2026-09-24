@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+
+{% block title %}Marvin Agents - Vogon{% endblock %}
+
+{% block content %}
+<h1>Marvin Agents</h1>
+
+<div class="card">
+    {% if marvins %}
+    <div class="session-list">
+        {% for marvin in marvins %}
+        <a href="{% url 'marvins:marvin-detail' marvin.id %}" class="session-item">
+            <div>
+                <div class="session-item-title">{{ marvin.name }}</div>
+                <div class="session-item-meta">
+                    {{ marvin.client_id }} &middot; {{ marvin.last_seen|default:"Never" }}
+                </div>
+            </div>
+            <span class="badge badge-{{ marvin.status }}">{{ marvin.status }}</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-state">No Marvin agents registered yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

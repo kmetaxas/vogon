@@ -1,0 +1,120 @@
+{% load markdown_tags %}
+{% if signal_error %}
+<div class="agent-event agent-event-error" style="margin-bottom: var(--spacing-sm);">
+    <span class="error">&#9888; {{ signal_error }}</span>
+</div>
+{% endif %}
+{% if session.status == session.Status.PAUSED %}
+<div class="agent-event agent-event-info" style="margin-bottom: var(--spacing-sm);">
+    <span>&#9208; The assistant needs more time. Click Continue to resume.</span>
+</div>
+{% endif %}
+{% for item in items %}
+{% if item.type == 'tool_group' %}
+<div class="agent-event agent-event-tool_group" data-created-at="{{ item.created_at }}">
+    <details>
+        <summary>{{ item.label }}</summary>
+        <div class="tool-request">
+            <div class="tool-section-label">
+                Request
+                <button type="button" class="tool-copy-btn" onclick="var p=this.closest('.tool-request').querySelector('pre'); navigator.clipboard.writeText(p.innerText); this.textContent='Copied!'; setTimeout(function(b){b.textContent='Copy';},1500,this);">Copy</button>
+            </div>
+            <pre>{{ item.detail.started|default:"{}"|json_pp }}</pre>
+        </div>
+        <div class="tool-response">
+            <div class="tool-section-label">
+                Response
+                <button type="button" class="tool-copy-btn" onclick="var p=this.closest('.tool-response').querySelector('pre'); navigator.clipboard.writeText(p.innerText); this.textContent='Copied!'; setTimeout(function(b){b.textContent='Copy';},1500,this);">Copy</button>
+            </div>
+            <pre>{{ item.detail.result|default:"{}"|json_pp }}</pre>
+        </div>
+    </details>
+</div>
+{% elif item.type == 'event' %}
+<div class="agent-event agent-event-{{ item.kind }}" data-created-at="{{ item.created_at }}">
+    {% if item.kind == 'error' %}
+        <span class="error">&#9888; {{ item.label }}</span>
+    {% else %}
+        <span>{{ item.label }}</span>
+    {% endif %}
+</div>
+{% elif item.type == 'progress' %}
+<div class="agent-progress-box{% if not item.detail.active %} agent-progress-box-complete{% endif %}" data-created-at="{{ item.created_at }}">
+    <details>
+        <summary>
+            {% if item.detail.active %}
+            <span class="spinner"></span>
+            {% else %}
+            <span class="progress-complete-indicator">&#10003;</span>
+            {% endif %}
+            <span class="progress-label">{{ item.label }}</span>
+            <span class="progress-meta">{{ item.detail.tool_calls_count }} tool call(s)</span>
+        </summary>
+        <div class="progress-details">
+            {% if item.detail.reasoning %}
+            <div class="progress-reasoning">
+                <div class="progress-section-label">Reasoning</div>
+                <div class="progress-reasoning-content">{{ item.detail.reasoning|markdownify }}</div>
+            </div>
+            {% endif %}
+            {% for tool in item.detail.tool_calls %}
+            <details class="progress-tool-call">
+                <summary class="progress-tool-summary">
+                    <span class="progress-tool-status progress-tool-status-{{ tool.status }}">
+                        {% if tool.status == 'completed' %}&#10003;{% else %}&#10227;{% endif %}
+                    </span>
+                    <span class="progress-tool-name">{{ tool.name|default:"tool call" }}</span>
+                    <span class="progress-tool-state">{{ tool.status|title }}</span>
+                </summary>
+                <div class="progress-tool-body">
+                    {% if tool.arguments %}
+                    <div class="progress-tool-section">
+                        <div class="progress-section-label">
+                            Request
+                            <button type="button" class="tool-copy-btn" onclick="var p=this.closest('.progress-tool-section').querySelector('pre'); navigator.clipboard.writeText(p.innerText); this.textContent='Copied!'; setTimeout(function(b){b.textContent='Copy';},1500,this);">Copy</button>
+                        </div>
+                        <pre>{{ tool.arguments|json_pp }}</pre>
+                    </div>
+                    {% endif %}
+                    <div class="progress-tool-section">
+                        <div class="progress-section-label">
+                            Response
+                            {% if tool.result %}
+                            <button type="button" class="tool-copy-btn" onclick="var p=this.closest('.progress-tool-section').querySelector('pre'); navigator.clipboard.writeText(p.innerText); this.textContent='Copied!'; setTimeout(function(b){b.textContent='Copy';},1500,this);">Copy</button>
+                            {% endif %}
+                        </div>
+                        {% if tool.result %}
+                        <pre>{{ tool.result|json_pp }}</pre>
+                        {% else %}
+                        <div class="progress-tool-pending">Waiting for result...</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </details>
+            {% endfor %}
+        </div>
+    </details>
+</div>
+{% else %}
+<div class="chat-message chat-message-{{ item.role }}" data-created-at="{{ item.created_at }}">
+    <div style="font-size: 0.75rem; font-weight: 500; margin-bottom: var(--spacing-xs); opacity: 0.7;">
+        {{ item.role|title }}
+    </div>
+    <div>{{ item.content|markdownify }}</div>
+
+    {% if item.references %}
+    <div class="message-references">
+      {% for ref in item.references %}
+      <a href="{% url 'infradesigns:design-detail' ref.id %}" class="message-reference-card">
+        <span class="reference-icon">&#128208;</span>
+        <span class="reference-title">{{ ref.title }}</span>
+        <span class="badge badge-{{ ref.environment }}">{{ ref.environment|title }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+{% empty %}
+<p class="empty-state">No messages yet. Start the conversation below.</p>
+{% endfor %}
