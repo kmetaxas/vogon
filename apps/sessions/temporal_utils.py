@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from temporalio.client import WorkflowHandle
 
 from services.temporal_workers.client import get_temporal_client
@@ -26,7 +27,7 @@ async def start_troubleshoot_workflow(
     workflow_id = f"tsession-{session_id}"
     return await temporal_client.start_workflow(
         TroubleshootWorkflow.run,
-        args=[session_id, thread_id],
+        args=[session_id, thread_id, settings.LLM_MAX_AGENT_ITERATIONS],
         id=workflow_id,
         task_queue=os.environ.get("TEMPORAL_TASK_QUEUE", "vogon"),
     )

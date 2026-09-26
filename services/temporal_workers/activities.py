@@ -309,6 +309,7 @@ SYSTEM_PROMPT = (
     "At your disposal, you have agents running on the infrastructure. "
     "These provide investigative and testing capabilities that can be looked-up with "
     "find_tools() and then executed. "
+    "When multiple independent tools are needed, request them all at once isntead of one at a time"
 )
 
 

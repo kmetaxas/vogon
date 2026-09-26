@@ -2168,7 +2168,7 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
 
         return execute_activity
 
-    def _run_workflow(self, execute_activity=None, message=None):
+    def _run_workflow(self, execute_activity=None, message=None, max_iterations=12):
         workflow_instance = TroubleshootWorkflow()
         if message is None:
             message = {"content": "Check disk", "role": Message.Role.USER, "thread_id": "thread-1"}
@@ -2198,7 +2198,9 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             ),
             patch("services.temporal_workers.workflows.workflow.logger", Mock()),
         ):
-            return asyncio.run(workflow_instance.run("session-1", "thread-1")), workflow_instance
+            return asyncio.run(
+                workflow_instance.run("session-1", "thread-1", max_iterations=max_iterations)
+            ), workflow_instance
 
     def test_workflow_creates_continue_prompt_on_timeout(self):
         calls = []
@@ -2340,7 +2342,7 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             {"content": "Loop", "role": Message.Role.USER, "thread_id": "thread-1"},
         )
 
-        self.assertEqual(call_llm_count, 8)
+        self.assertEqual(call_llm_count, 12)
         create_calls = [c for c in calls if c[0] == "create_assistant_message"]
         self.assertEqual(len(create_calls), 1)
         self.assertIn("Continue", create_calls[0][2]["args"][1])
@@ -2348,6 +2350,91 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
         set_status_calls = [c for c in calls if c[0] == "set_session_status"]
         paused_calls = [c for c in set_status_calls if c[2]["args"] == ["session-1", "paused"]]
         self.assertEqual(len(paused_calls), 1)
+
+    def test_workflow_executes_multiple_tools_in_parallel(self):
+        calls = []
+        call_llm_count = 0
+
+        def call_llm(_activity_args, _calls):
+            nonlocal call_llm_count
+            call_llm_count += 1
+            if call_llm_count == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "find_tools", "id": "tc1", "arguments": {"query": "disk"}},
+                        {"name": "execute_tool", "id": "tc2", "arguments": {"cmd": "df -h"}},
+                        {"name": "get_prometheus_alerts", "id": "tc3", "arguments": {}},
+                    ],
+                }
+            return {"content": "Done", "tool_calls": []}
+
+        execute_activity = self._make_execute_activity(
+            calls=calls,
+            call_llm=call_llm,
+        )
+
+        state, _ = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["status"], "completed")
+        execute_calls = [c for c in calls if c[0] == "execute_llm_tool"]
+        self.assertEqual(len(execute_calls), 3)
+        create_msg_calls = [c for c in calls if c[0] == "create_tool_call_messages"]
+        self.assertEqual(len(create_msg_calls), 3)
+
+    def test_workflow_isolates_tool_call_failures(self):
+        calls = []
+        call_llm_count = 0
+
+        async def execute_activity(name, *args, **kwargs):
+            calls.append((name, args, kwargs))
+            activity_args = kwargs.get("args", [])
+
+            if name == "initialize_session":
+                return {
+                    "session_id": "session-1",
+                    "thread_id": "thread-1",
+                    "status": "initialized",
+                }
+            if name == "set_session_status":
+                return {"session_id": activity_args[0], "status": activity_args[1]}
+            if name == "build_llm_context":
+                message = activity_args[1]
+                return {"messages": [{"role": "user", "content": message["content"]}]}
+            if name == "call_llm":
+                nonlocal call_llm_count
+                call_llm_count += 1
+                if call_llm_count == 1:
+                    return {
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "find_tools", "id": "tc1", "arguments": {"query": "disk"}},
+                            {"name": "execute_tool", "id": "tc2", "arguments": {"cmd": "df -h"}},
+                        ],
+                    }
+                return {"content": "Done", "tool_calls": []}
+            if name == "record_agent_event":
+                return {"kind": activity_args[1]}
+            if name == "execute_llm_tool":
+                tc = activity_args[1]
+                if tc.get("name") == "execute_tool":
+                    raise RuntimeError("Simulated tool failure")
+                return {"result": {"ok": True}, "db_tool_call_id": None}
+            if name == "create_tool_call_messages":
+                return {"assistant_message_id": "a", "tool_message_id": "t"}
+            if name == "create_assistant_message":
+                return {"message_id": "msg-1", "thread_id": "thread-1"}
+            if name == "check_completion":
+                return True
+            return {}
+
+        state, _ = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["status"], "completed")
+        execute_calls = [c for c in calls if c[0] == "execute_llm_tool"]
+        self.assertEqual(len(execute_calls), 2)
+        create_msg_calls = [c for c in calls if c[0] == "create_tool_call_messages"]
+        self.assertEqual(len(create_msg_calls), 2)
 
 
 class ContinueFlagTests(TestCase):
