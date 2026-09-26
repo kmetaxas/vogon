@@ -51,6 +51,14 @@ class TSession(models.Model):
         blank=True,
         help_text="Session-level execution budget. See SessionBudget schema.",
     )
+    llm_provider = models.ForeignKey(
+        "llm.LLMProvider",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tsessions",
+        help_text="Optional LLM provider override for this session. Falls back to org default.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -131,9 +139,8 @@ class Thread(models.Model):
     def get_or_create_for_user(cls, tsession, user):
         return cls.objects.get_or_create(tsession=tsession, user=user)
 
-    def latest_messages(self, limit=50):
-        message_ids = self.messages.order_by("-created_at").values_list("id", flat=True)[:limit]
-        return self.messages.filter(id__in=message_ids).order_by("created_at")
+    def latest_messages(self):
+        return self.messages.order_by("created_at")
 
     def can_view(self, user):
         if not getattr(user, "is_authenticated", False):
