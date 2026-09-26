@@ -4,10 +4,17 @@ from services.llm.base import LLMClient
 from services.llm.openai_compat import OpenAICompatibleClient
 
 
-def get_llm_client(organization_id: str | None = None) -> LLMClient:
-    """Resolve provider: org default → org any → settings fallback."""
+def get_llm_client(organization_id: str | None = None, provider_id: str | None = None) -> LLMClient:
+    """Resolve provider: explicit provider_id → org default → org any → settings fallback."""
     provider = None
-    if organization_id:
+    if provider_id:
+        try:
+            from apps.llm.models import LLMProvider
+
+            provider = LLMProvider.objects.filter(id=provider_id, enabled=True).first()
+        except Exception:
+            provider = None
+    if provider is None and organization_id:
         try:
             from apps.llm.models import LLMProvider
 

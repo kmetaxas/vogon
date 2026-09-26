@@ -383,7 +383,8 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
     thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
         id=thread_id
     )
-    client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id))
+    provider_id = str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
+    client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id), provider_id)
     llm_messages = [
         LLMMessage(
             role=m["role"],

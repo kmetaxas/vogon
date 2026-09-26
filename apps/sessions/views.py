@@ -1,11 +1,15 @@
+# pyright: reportAttributeAccessIssue=false
+
 import logging
 
+from django.core.exceptions import ValidationError
 from django.http.response import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
 from apps.core.mixins import OrganizationRequiredMixin
+from apps.llm.models import LLMProvider
 from apps.sessions.models import (
     AgentEvent,
     ArchitectureRequest,
@@ -101,7 +105,9 @@ def _events_to_progress(events, active=False):
         "created_at": (
             events[-1]["created_at"].isoformat()
             if events and hasattr(events[-1]["created_at"], "isoformat")
-            else events[-1]["created_at"] if events else ""
+            else events[-1]["created_at"]
+            if events
+            else ""
         ),
     }
 
@@ -304,16 +310,29 @@ class SessionListView(OrganizationRequiredMixin, View):
 
 class SessionCreateView(OrganizationRequiredMixin, View):
     def get(self, request):
-        return render(request, "sessions/session_create.html")
+        providers = LLMProvider.objects.filter(
+            organization=self.organization, enabled=True
+        ).order_by("-is_default", "name")
+        return render(request, "sessions/session_create.html", {"providers": providers})
 
     def post(self, request):
         title = request.POST.get("title", "New Troubleshooting Session")
-        session = TSession.objects.create(
-            organization=self.organization,
-            title=title,
-            status=TSession.Status.ACTIVE,
-            created_by=request.user,
-        )
+        provider_id = request.POST.get("llm_provider", "").strip()
+        create_kwargs: dict = {
+            "organization": self.organization,
+            "title": title,
+            "status": TSession.Status.ACTIVE,
+            "created_by": request.user,
+        }
+        if provider_id:
+            try:
+                provider = LLMProvider.objects.get(
+                    id=provider_id, organization=self.organization, enabled=True
+                )
+                create_kwargs["llm_provider"] = provider
+            except (LLMProvider.DoesNotExist, ValidationError):
+                pass
+        session = TSession.objects.create(**create_kwargs)
         thread, _ = Thread.objects.get_or_create(tsession=session, user=request.user)
         session.temporal_workflow_id = f"tsession-{session.id}"
         session.save(update_fields=["temporal_workflow_id", "updated_at"])
@@ -344,6 +363,9 @@ class SessionDetailView(OrganizationRequiredMixin, View):
             primary_thread, _ = Thread.objects.get_or_create(tsession=session, user=request.user)
             context = _thread_ui_context(session, request.user)
         context.update(_thread_messages_context(session, primary_thread))
+        context["llm_providers"] = LLMProvider.objects.filter(
+            organization=self.organization, enabled=True
+        ).order_by("-is_default", "name")
         return render(request, "sessions/session_detail.html", context)
 
 
@@ -378,6 +400,9 @@ class ThreadDetailPartialView(OrganizationRequiredMixin, View):
             "is_primary": thread.user == request.user,
             "primary_thread": Thread.objects.filter(tsession=session, user=request.user).first(),
             "can_complete_session": session.created_by_id == request.user.id,
+            "llm_providers": LLMProvider.objects.filter(
+                organization=self.organization, enabled=True
+            ).order_by("-is_default", "name"),
         }
         return render(request, "sessions/_thread_pane.html", context)
 
@@ -408,6 +433,19 @@ class ThreadSendMessageView(OrganizationRequiredMixin, View):
             return HttpResponseForbidden(b"You can only send messages in your own thread.")
         content = request.POST.get("content", "").strip()
         signal_error = None
+
+        provider_id = request.POST.get("llm_provider", "").strip()
+        if provider_id:
+            try:
+                provider = LLMProvider.objects.get(
+                    id=provider_id, organization=self.organization, enabled=True
+                )
+                if session.llm_provider_id != provider.id:
+                    session.llm_provider = provider
+                    session.save(update_fields=["llm_provider", "updated_at"])
+            except (LLMProvider.DoesNotExist, ValidationError):
+                pass
+
         if content:
             # Extract design references like [design:<uuid>]
             import re

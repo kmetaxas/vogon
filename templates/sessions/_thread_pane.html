@@ -47,6 +47,17 @@
             hx-vals='{"content": "Continue"}'>Continue</button>
   </div>
   <div class="thread-composer">
+    <div class="composer-toolbar" style="display: flex; align-items: center; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
+      <div class="model-selector" style="display: flex; align-items: center; gap: var(--spacing-xs);">
+        <label for="llm-provider-select-paused" style="font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap;">Model:</label>
+        <select id="llm-provider-select-paused" name="llm_provider" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
+          <option value="" {% if not session.llm_provider %}selected{% endif %}>Default</option>
+          {% for provider in llm_providers %}
+          <option value="{{ provider.id }}" {% if session.llm_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
     <form id="chat-form"
           method="post"
           action="{% url 'sessions:thread-send-message' session.id thread.id %}"
@@ -62,9 +73,18 @@
   {% else %}
   <div class="thread-composer">
     {% if is_primary %}
-    <div class="composer-toolbar">
+    <div class="composer-toolbar" style="display: flex; align-items: center; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
       <button type="button" class="btn btn-sm btn-secondary" id="design-ref-btn"
               title="Reference an infrastructure design">&#128208; Design</button>
+      <div class="model-selector" style="display: flex; align-items: center; gap: var(--spacing-xs);">
+        <label for="llm-provider-select" style="font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap;">Model:</label>
+        <select id="llm-provider-select" name="llm_provider" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
+          <option value="" {% if not session.llm_provider %}selected{% endif %}>Default</option>
+          {% for provider in llm_providers %}
+          <option value="{{ provider.id }}" {% if session.llm_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
     </div>
     {% endif %}
     <form id="chat-form"

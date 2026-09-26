@@ -1,7 +1,77 @@
 from django.test import TestCase
+from unittest.mock import patch
 
 from apps.core.models import Organization, OrganizationMembership, User
 from apps.llm.models import LLMProvider
+
+
+class LLMRegistryTests(TestCase):
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_explicit_provider_id(self, mock_client):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="Reg", slug="reg")
+        provider = LLMProvider.objects.create(
+            organization=org,
+            name="Explicit",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            base_url="http://explicit:11434/v1",
+            model="explicit-model",
+        )
+        LLMProvider.objects.create(
+            organization=org,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://default:11434/v1",
+            model="default-model",
+            is_default=True,
+        )
+
+        get_llm_client(organization_id=str(org.id), provider_id=str(provider.id))
+
+        call_kwargs = mock_client.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://explicit:11434/v1")
+        self.assertEqual(call_kwargs["model"], "explicit-model")
+
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_no_provider_id_uses_org_default(self, mock_client):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="Reg2", slug="reg2")
+        LLMProvider.objects.create(
+            organization=org,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://default:11434/v1",
+            model="default-model",
+            is_default=True,
+        )
+
+        get_llm_client(organization_id=str(org.id))
+
+        call_kwargs = mock_client.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://default:11434/v1")
+        self.assertEqual(call_kwargs["model"], "default-model")
+
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_invalid_provider_id_falls_back_to_default(self, mock_client):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="Reg3", slug="reg3")
+        LLMProvider.objects.create(
+            organization=org,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://default:11434/v1",
+            model="default-model",
+            is_default=True,
+        )
+
+        get_llm_client(organization_id=str(org.id), provider_id="nonexistent-uuid")
+
+        call_kwargs = mock_client.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://default:11434/v1")
+        self.assertEqual(call_kwargs["model"], "default-model")
 
 
 class LLMApiTests(TestCase):

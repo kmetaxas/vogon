@@ -51,6 +51,14 @@ class TSession(models.Model):
         blank=True,
         help_text="Session-level execution budget. See SessionBudget schema.",
     )
+    llm_provider = models.ForeignKey(
+        "llm.LLMProvider",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tsessions",
+        help_text="Optional LLM provider override for this session. Falls back to org default.",
+    )
 
     class Meta:
         ordering = ["-created_at"]
