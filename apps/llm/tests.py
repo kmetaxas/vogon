@@ -1,5 +1,6 @@
-from django.test import TestCase
 from unittest.mock import patch
+
+from django.test import TestCase
 
 from apps.core.models import Organization, OrganizationMembership, User
 from apps.llm.models import LLMProvider

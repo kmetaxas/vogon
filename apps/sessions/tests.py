@@ -890,13 +890,6 @@ class TemporalActivityTests(TransactionTestCase):
 
         user = User.objects.create_user(username="override_user", password="pass")
         organization = Organization.objects.create(name="Override", slug="override")
-        default_provider = LLMProvider.objects.create(
-            organization=organization,
-            name="Default",
-            provider_type=LLMProvider.ProviderType.OLLAMA,
-            model="default-model",
-            is_default=True,
-        )
         override_provider = LLMProvider.objects.create(
             organization=organization,
             name="Override",
@@ -2399,9 +2392,12 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             ),
             patch("services.temporal_workers.workflows.workflow.logger", Mock()),
         ):
-            return asyncio.run(
-                workflow_instance.run("session-1", "thread-1", max_iterations=max_iterations)
-            ), workflow_instance
+            return (
+                asyncio.run(
+                    workflow_instance.run("session-1", "thread-1", max_iterations=max_iterations)
+                ),
+                workflow_instance,
+            )
 
     def test_workflow_creates_continue_prompt_on_timeout(self):
         calls = []
