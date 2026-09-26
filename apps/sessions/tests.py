@@ -1785,6 +1785,19 @@ class ThreadModelTests(TestCase):
         ThreadMembership.objects.create(thread=thread, user=self.user, is_following=False)
         self.assertFalse(thread.is_followed_by(self.user))
 
+    def test_latest_messages_returns_all_messages(self):
+        thread = Thread.objects.create(tsession=self.session, user=self.user)
+        for i in range(55):
+            Message.objects.create(
+                thread=thread,
+                role=Message.Role.USER,
+                content=f"message {i}",
+            )
+        latest = thread.latest_messages()
+        self.assertEqual(latest.count(), 55)
+        timestamps = list(latest.values_list("created_at", flat=True))
+        self.assertEqual(timestamps, sorted(timestamps))
+
 
 class ThreadMembershipModelTests(TestCase):
     def setUp(self):

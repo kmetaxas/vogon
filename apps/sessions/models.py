@@ -139,9 +139,8 @@ class Thread(models.Model):
     def get_or_create_for_user(cls, tsession, user):
         return cls.objects.get_or_create(tsession=tsession, user=user)
 
-    def latest_messages(self, limit=50):
-        message_ids = self.messages.order_by("-created_at").values_list("id", flat=True)[:limit]
-        return self.messages.filter(id__in=message_ids).order_by("created_at")
+    def latest_messages(self):
+        return self.messages.order_by("created_at")
 
     def can_view(self, user):
         if not getattr(user, "is_authenticated", False):
