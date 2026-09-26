@@ -10,6 +10,7 @@ from django.urls import reverse
 from openai import APIError, APITimeoutError
 
 from apps.core.models import Organization, OrganizationMembership, User
+from apps.llm.models import LLMProvider
 from apps.sessions.models import (
     AgentEvent,
     ArchitectureRequest,
@@ -156,6 +157,101 @@ class SessionViewTests(TestCase):
             0,
         )
         log_exception.assert_called_once()
+
+    def test_session_create_with_provider_from_web_form(self):
+        provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Custom",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="custom-model",
+        )
+        response = self.client.post(
+            reverse("sessions:session-create"),
+            {"title": "Web Form Session", "llm_provider": str(provider.id)},
+        )
+        session = TSession.objects.get(title="Web Form Session")
+        self.assertEqual(session.llm_provider_id, provider.id)
+        self.assertRedirects(
+            response,
+            reverse("sessions:session-detail", kwargs={"session_id": session.id}),
+        )
+
+    def test_session_create_with_invalid_provider_ignored(self):
+        response = self.client.post(
+            reverse("sessions:session-create"),
+            {"title": "Invalid Provider Session", "llm_provider": "not-a-uuid"},
+        )
+        session = TSession.objects.get(title="Invalid Provider Session")
+        self.assertIsNone(session.llm_provider_id)
+        self.assertRedirects(
+            response,
+            reverse("sessions:session-detail", kwargs={"session_id": session.id}),
+        )
+
+    def test_send_message_updates_session_provider(self):
+        from unittest.mock import patch
+
+        default_provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="default-model",
+            is_default=True,
+        )
+        new_provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Better",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="better-model",
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Switch Model",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+            llm_provider=default_provider,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+
+        with patch("apps.sessions.views.send_message_to_workflow_sync") as send_message:
+            response = self.client.post(
+                reverse(
+                    "sessions:thread-send-message",
+                    kwargs={"session_id": session.id, "thread_id": thread.id},
+                ),
+                {"content": "Hello with better model", "llm_provider": str(new_provider.id)},
+            )
+
+        session.refresh_from_db()
+        self.assertEqual(session.llm_provider_id, new_provider.id)
+        self.assertRedirects(
+            response,
+            reverse("sessions:session-detail", kwargs={"session_id": session.id}),
+        )
+        send_message.assert_called_once()
+
+    def test_session_detail_passes_providers_to_template(self):
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Detail Context",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        Thread.objects.create(tsession=session, user=self.user)
+        LLMProvider.objects.create(
+            organization=self.organization,
+            name="Visible",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="visible-model",
+        )
+
+        response = self.client.get(
+            reverse("sessions:session-detail", kwargs={"session_id": session.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("llm_providers", response.context)
+        self.assertEqual(len(response.context["llm_providers"]), 1)
 
     def test_session_status_view_renders_badge_partial(self):
         session = TSession.objects.create(
@@ -784,6 +880,62 @@ class TemporalActivityTests(TransactionTestCase):
         self.assertEqual(assistant_msg.tool_call, tool_call)
         self.assertEqual(tool_msg.tool_call, tool_call)
 
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_uses_session_provider_override(self, mock_get_client):
+        from services.llm.base import LLMResponse
+
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        user = User.objects.create_user(username="override_user", password="pass")
+        organization = Organization.objects.create(name="Override", slug="override")
+        override_provider = LLMProvider.objects.create(
+            organization=organization,
+            name="Override",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="override-model",
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Override Session",
+            created_by=user,
+            llm_provider=override_provider,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        mock_get_client.assert_called_once_with(str(organization.id), str(override_provider.id))
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_without_provider_override_uses_org_default(self, mock_get_client):
+        from services.llm.base import LLMResponse
+
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        user = User.objects.create_user(username="default_user", password="pass")
+        organization = Organization.objects.create(name="Default2", slug="default2")
+        LLMProvider.objects.create(
+            organization=organization,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="default-model",
+            is_default=True,
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Default Session",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        mock_get_client.assert_called_once_with(str(organization.id), None)
+
 
 class AgentErrorTests(TransactionTestCase):
     def test_execute_llm_tool_no_marvin_matching_labels(self):
@@ -869,6 +1021,48 @@ class SessionAPITests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["title"], "New API Session")
+
+    def test_session_create_with_llm_provider(self):
+        provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Custom",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="custom-model",
+        )
+        response = self.client.post(
+            "/api/sessions/",
+            {
+                "organization": str(self.organization.id),
+                "title": "Custom Model Session",
+                "llm_provider": str(provider.id),
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()
+        self.assertEqual(data["title"], "Custom Model Session")
+        self.assertEqual(data["llm_provider"], str(provider.id))
+        self.assertEqual(data["llm_provider_name"], "Custom")
+
+    def test_session_update_llm_provider(self):
+        session = TSession.objects.create(
+            organization=self.organization, title="Updatable", created_by=self.user
+        )
+        provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Updated",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="updated-model",
+        )
+        response = self.client.patch(
+            f"/api/sessions/{session.id}/",
+            {"llm_provider": str(provider.id)},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["llm_provider"], str(provider.id))
+        self.assertEqual(data["llm_provider_name"], "Updated")
 
     def test_thread_list_api_filtered_by_session(self):
         session = TSession.objects.create(
@@ -1591,6 +1785,19 @@ class ThreadModelTests(TestCase):
         ThreadMembership.objects.create(thread=thread, user=self.user, is_following=False)
         self.assertFalse(thread.is_followed_by(self.user))
 
+    def test_latest_messages_returns_all_messages(self):
+        thread = Thread.objects.create(tsession=self.session, user=self.user)
+        for i in range(55):
+            Message.objects.create(
+                thread=thread,
+                role=Message.Role.USER,
+                content=f"message {i}",
+            )
+        latest = thread.latest_messages()
+        self.assertEqual(latest.count(), 55)
+        timestamps = list(latest.values_list("created_at", flat=True))
+        self.assertEqual(timestamps, sorted(timestamps))
+
 
 class ThreadMembershipModelTests(TestCase):
     def setUp(self):
@@ -2168,7 +2375,7 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
 
         return execute_activity
 
-    def _run_workflow(self, execute_activity=None, message=None):
+    def _run_workflow(self, execute_activity=None, message=None, max_iterations=12):
         workflow_instance = TroubleshootWorkflow()
         if message is None:
             message = {"content": "Check disk", "role": Message.Role.USER, "thread_id": "thread-1"}
@@ -2198,7 +2405,12 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             ),
             patch("services.temporal_workers.workflows.workflow.logger", Mock()),
         ):
-            return asyncio.run(workflow_instance.run("session-1", "thread-1")), workflow_instance
+            return (
+                asyncio.run(
+                    workflow_instance.run("session-1", "thread-1", max_iterations=max_iterations)
+                ),
+                workflow_instance,
+            )
 
     def test_workflow_creates_continue_prompt_on_timeout(self):
         calls = []
@@ -2340,7 +2552,7 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             {"content": "Loop", "role": Message.Role.USER, "thread_id": "thread-1"},
         )
 
-        self.assertEqual(call_llm_count, 8)
+        self.assertEqual(call_llm_count, 12)
         create_calls = [c for c in calls if c[0] == "create_assistant_message"]
         self.assertEqual(len(create_calls), 1)
         self.assertIn("Continue", create_calls[0][2]["args"][1])
@@ -2348,6 +2560,91 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
         set_status_calls = [c for c in calls if c[0] == "set_session_status"]
         paused_calls = [c for c in set_status_calls if c[2]["args"] == ["session-1", "paused"]]
         self.assertEqual(len(paused_calls), 1)
+
+    def test_workflow_executes_multiple_tools_in_parallel(self):
+        calls = []
+        call_llm_count = 0
+
+        def call_llm(_activity_args, _calls):
+            nonlocal call_llm_count
+            call_llm_count += 1
+            if call_llm_count == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "find_tools", "id": "tc1", "arguments": {"query": "disk"}},
+                        {"name": "execute_tool", "id": "tc2", "arguments": {"cmd": "df -h"}},
+                        {"name": "get_prometheus_alerts", "id": "tc3", "arguments": {}},
+                    ],
+                }
+            return {"content": "Done", "tool_calls": []}
+
+        execute_activity = self._make_execute_activity(
+            calls=calls,
+            call_llm=call_llm,
+        )
+
+        state, _ = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["status"], "completed")
+        execute_calls = [c for c in calls if c[0] == "execute_llm_tool"]
+        self.assertEqual(len(execute_calls), 3)
+        create_msg_calls = [c for c in calls if c[0] == "create_tool_call_messages"]
+        self.assertEqual(len(create_msg_calls), 3)
+
+    def test_workflow_isolates_tool_call_failures(self):
+        calls = []
+        call_llm_count = 0
+
+        async def execute_activity(name, *args, **kwargs):
+            calls.append((name, args, kwargs))
+            activity_args = kwargs.get("args", [])
+
+            if name == "initialize_session":
+                return {
+                    "session_id": "session-1",
+                    "thread_id": "thread-1",
+                    "status": "initialized",
+                }
+            if name == "set_session_status":
+                return {"session_id": activity_args[0], "status": activity_args[1]}
+            if name == "build_llm_context":
+                message = activity_args[1]
+                return {"messages": [{"role": "user", "content": message["content"]}]}
+            if name == "call_llm":
+                nonlocal call_llm_count
+                call_llm_count += 1
+                if call_llm_count == 1:
+                    return {
+                        "content": "",
+                        "tool_calls": [
+                            {"name": "find_tools", "id": "tc1", "arguments": {"query": "disk"}},
+                            {"name": "execute_tool", "id": "tc2", "arguments": {"cmd": "df -h"}},
+                        ],
+                    }
+                return {"content": "Done", "tool_calls": []}
+            if name == "record_agent_event":
+                return {"kind": activity_args[1]}
+            if name == "execute_llm_tool":
+                tc = activity_args[1]
+                if tc.get("name") == "execute_tool":
+                    raise RuntimeError("Simulated tool failure")
+                return {"result": {"ok": True}, "db_tool_call_id": None}
+            if name == "create_tool_call_messages":
+                return {"assistant_message_id": "a", "tool_message_id": "t"}
+            if name == "create_assistant_message":
+                return {"message_id": "msg-1", "thread_id": "thread-1"}
+            if name == "check_completion":
+                return True
+            return {}
+
+        state, _ = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["status"], "completed")
+        execute_calls = [c for c in calls if c[0] == "execute_llm_tool"]
+        self.assertEqual(len(execute_calls), 2)
+        create_msg_calls = [c for c in calls if c[0] == "create_tool_call_messages"]
+        self.assertEqual(len(create_msg_calls), 2)
 
 
 class ContinueFlagTests(TestCase):

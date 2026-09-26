@@ -12,6 +12,8 @@ from apps.sessions.models import (
 
 
 class TSessionSerializer(serializers.ModelSerializer):
+    llm_provider_name = serializers.CharField(source="llm_provider.name", read_only=True)
+
     class Meta:
         model = TSession
         fields = [
@@ -21,6 +23,8 @@ class TSessionSerializer(serializers.ModelSerializer):
             "status",
             "temporal_workflow_id",
             "created_by",
+            "llm_provider",
+            "llm_provider_name",
             "created_at",
             "updated_at",
         ]

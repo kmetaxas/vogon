@@ -61,6 +61,7 @@ class OpenAICompatibleClient:
                 }
                 for t in tools
             ]
+            kwargs["parallel_tool_calls"] = True
         resp = await self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
         reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None)

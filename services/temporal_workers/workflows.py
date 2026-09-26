@@ -10,6 +10,8 @@ from typing import Any
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+MAX_PARALLEL_TOOL_CALLS = 6
+
 with workflow.unsafe.imports_passed_through():
     pass
 
@@ -59,7 +61,12 @@ class TroubleshootWorkflow:
         }
 
     @workflow.run
-    async def run(self, session_id: str, thread_id: str) -> dict:
+    async def run(
+        self,
+        session_id: str,
+        thread_id: str,
+        max_iterations: int = 8,
+    ) -> dict:
         """Run the troubleshooting workflow for a given session and thread."""
         workflow.logger.info(f"Starting TroubleshootWorkflow for session {session_id}")
 
@@ -71,6 +78,7 @@ class TroubleshootWorkflow:
                 "processed_messages": 0,
                 "pending_messages": 0,
                 "last_message": None,
+                "max_iterations": max_iterations,
             }
         )
 
@@ -109,7 +117,7 @@ class TroubleshootWorkflow:
 
                 assistant_response = ""
                 assistant_message_created = False
-                for iteration in range(8):
+                for iteration in range(max_iterations):
                     self.state["iteration_count"] = iteration
                     # Check if user sent a new message while we were working
                     if self._pending_messages:
@@ -249,7 +257,8 @@ class TroubleshootWorkflow:
                     assistant_response = resp["content"]
 
                     if resp.get("tool_calls"):
-                        for tc in resp["tool_calls"]:
+                        tool_calls = resp["tool_calls"]
+                        for tc in tool_calls:
                             await workflow.execute_activity(
                                 "record_agent_event",
                                 args=[
@@ -272,8 +281,12 @@ class TroubleshootWorkflow:
                                 ],
                                 start_to_close_timeout=timedelta(seconds=10),
                             )
-                            try:
-                                execute_result = await workflow.execute_activity(
+
+                        _all_execute_results: list[Any] = []
+                        for i in range(0, len(tool_calls), MAX_PARALLEL_TOOL_CALLS):
+                            batch = tool_calls[i : i + MAX_PARALLEL_TOOL_CALLS]
+                            batch_tasks = [
+                                workflow.execute_activity(
                                     "execute_llm_tool",
                                     args=[msg_thread_id, tc],
                                     start_to_close_timeout=timedelta(seconds=330),
@@ -283,13 +296,21 @@ class TroubleshootWorkflow:
                                         maximum_attempts=2,
                                     ),
                                 )
-                            except Exception as exc:
+                                for tc in batch
+                            ]
+                            batch_results = await asyncio.gather(
+                                *batch_tasks, return_exceptions=True
+                            )
+                            _all_execute_results.extend(batch_results)
+
+                        for tc, execute_result in zip(tool_calls, _all_execute_results):
+                            if isinstance(execute_result, BaseException):
+                                tool_name = tc.get("name", "")
                                 workflow.logger.warning(
-                                    f"execute_llm_tool failed for {tc.get('name', '')}: {exc}"
+                                    f"execute_llm_tool failed for {tool_name}: {execute_result}"
                                 )
-                                execute_result = {"error": str(exc)}
+                                tool_result = {"error": str(execute_result)}
                                 db_tool_call_id = None
-                                tool_result = execute_result
                                 await workflow.execute_activity(
                                     "record_agent_event",
                                     args=[
@@ -320,6 +341,7 @@ class TroubleshootWorkflow:
                                     }
                                 )
                                 continue
+
                             if (
                                 isinstance(execute_result, dict)
                                 and "db_tool_call_id" in execute_result

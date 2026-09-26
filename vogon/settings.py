@@ -183,9 +183,10 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-oss:20b")
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
-LLM_MAX_AGENT_ITERATIONS = int(os.environ.get("LLM_MAX_AGENT_ITERATIONS", "8"))
+LLM_MAX_AGENT_ITERATIONS = int(os.environ.get("LLM_MAX_AGENT_ITERATIONS", "12"))
 LLM_TOOL_TIMEOUT_SECONDS = int(os.environ.get("LLM_TOOL_TIMEOUT_SECONDS", "60"))
 MCP_TOOL_TIMEOUT_SECONDS = int(os.environ.get("MCP_TOOL_TIMEOUT_SECONDS", "60"))
+LLM_MAX_PARALLEL_TOOL_CALLS = int(os.environ.get("LLM_MAX_PARALLEL_TOOL_CALLS", "6"))
 LLM_HTTP_TIMEOUT_SECONDS = int(os.environ.get("LLM_HTTP_TIMEOUT_SECONDS", "590"))
 # Feature gate: expose Prometheus tools directly to the LLM (via standard tools).
 # When False, Prometheus queries must go through Marvin capabilities.

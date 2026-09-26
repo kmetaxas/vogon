@@ -11,6 +11,15 @@
             <label for="title" style="display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: var(--spacing-xs);">Session Title</label>
             <input type="text" id="title" name="title" class="form-control" placeholder="e.g., API Latency Investigation" required>
         </div>
+        <div style="margin-bottom: var(--spacing-md);">
+            <label for="llm_provider" style="display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: var(--spacing-xs);">Model</label>
+            <select id="llm_provider" name="llm_provider" class="form-control">
+                <option value="">Default</option>
+                {% for provider in providers %}
+                <option value="{{ provider.id }}">{{ provider.name }} ({{ provider.model }})</option>
+                {% endfor %}
+            </select>
+        </div>
         <button type="submit" class="btn btn-primary">Create Session</button>
     </form>
 </div>
