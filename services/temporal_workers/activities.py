@@ -960,3 +960,149 @@ def _record_agent_event(thread_id: str, kind: str, detail: dict) -> dict:
         detail=detail,
     )
     return {"event_id": str(event.id), "kind": kind, "label": label}
+
+
+@activity.defn
+async def load_check_context(check_id: str, version_id: str) -> dict:
+    """Load Check + Version snapshot for workflow execution."""
+    _setup_django_models()
+    from apps.checks.models import Check, CheckVersion
+
+    check = await sync_to_async(
+        Check.objects.select_related(
+            "organization", "llm_provider", "target_scope", "created_by"
+        ).get
+    )(id=check_id)
+
+    version = None
+    if version_id:
+        try:
+            version = await sync_to_async(CheckVersion.objects.get)(id=version_id, check=check)
+        except CheckVersion.DoesNotExist:
+            pass
+
+    context = {
+        "check_id": str(check.id),
+        "check_name": check.name,
+        "organization_id": str(check.organization_id),
+        "execution_mode": check.execution_mode,
+        "evaluation_config": check.evaluation_config or {},
+        "notification_config": check.notification_config or {},
+        "execution_budget": check.execution_budget or {},
+        "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
+        "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
+        "investigation_goal": check.evaluation_config.get("goal", "Investigate and report findings")
+        if check.evaluation_config
+        else "Investigate and report findings",
+    }
+
+    if version:
+        context["version_snapshot"] = version.definition_snapshot
+
+    return context
+
+
+@activity.defn
+async def evaluate_check(check_id: str, execution_result: dict, rules: list[dict]) -> dict:
+    """Evaluate execution results against deterministic rules."""
+    from apps.checks.evaluation import EvaluationEngine
+
+    result = EvaluationEngine.evaluate(execution_result, rules)
+    return {
+        "state": result.state.value,
+        "findings": [
+            {
+                "severity": f.severity.value,
+                "message": f.message,
+                "path": f.path,
+                "expected": f.expected,
+                "actual": f.actual,
+            }
+            for f in result.findings
+        ],
+        "confidence": result.confidence,
+    }
+
+
+@activity.defn
+async def update_check_execution(
+    execution_id: str | None,
+    status: str,
+    health_state: str,
+    result: dict,
+) -> dict:
+    """Update or create a CheckExecution record."""
+    _setup_django_models()
+    from apps.checks.models import CheckExecution
+
+    if execution_id:
+        try:
+            execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
+            execution.execution_status = getattr(
+                CheckExecution.ExecutionStatus,
+                status.upper(),
+                CheckExecution.ExecutionStatus.PENDING,
+            )
+            execution.health_state = getattr(
+                CheckExecution.HealthState,
+                health_state.upper(),
+                CheckExecution.HealthState.UNKNOWN,
+            )
+            execution.evaluation_result = result
+            await sync_to_async(execution.save)()
+            return {"id": str(execution.id), "status": status, "health_state": health_state}
+        except CheckExecution.DoesNotExist:
+            pass
+
+    # If no execution_id or not found, we can't create without a check
+    # The workflow should have created it already via a separate call
+    return {
+        "id": execution_id,
+        "status": status,
+        "health_state": health_state,
+        "error": "Execution not found",
+    }
+
+
+@activity.defn
+async def dispatch_actions(
+    check_id: str,
+    execution_id: str,
+    findings: list[dict],
+    dry_run: bool = False,
+) -> dict:
+    """Dispatch notifications for Check findings.
+
+    Placeholder — real Action Dispatcher implementation in Task 13.
+    For now, logs actions that would be dispatched.
+    """
+    _setup_django_models()
+    from apps.checks.models import Check, CheckActionLog
+
+    check = await sync_to_async(Check.objects.get)(id=check_id)
+    notification_config = check.notification_config or {}
+
+    actions_dispatched = []
+
+    if dry_run:
+        return {"dispatched": [], "dry_run": True}
+
+    # TODO: Replace with real Action Dispatcher in Task 13
+    for channel in notification_config.get("channels", []):
+        action = await sync_to_async(CheckActionLog.objects.create)(
+            check=check,
+            execution_id=execution_id if execution_id else None,
+            action_type=channel.get("type", "webhook"),
+            recipient=channel.get("target", ""),
+            payload={"findings": findings, "check_name": check.name},
+            delivery_status=CheckActionLog.DeliveryStatus.PENDING,
+        )
+        actions_dispatched.append(
+            {
+                "action_id": str(action.id),
+                "channel": channel.get("type"),
+                "target": channel.get("target"),
+            }
+        )
+
+    return {"dispatched": actions_dispatched, "dry_run": False}

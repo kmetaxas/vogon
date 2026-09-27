@@ -4,7 +4,9 @@
 
 import asyncio
 import json
-from datetime import timedelta
+import re
+from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from temporalio import workflow
@@ -538,6 +540,470 @@ class ThreadWorkflow:
 
         workflow.logger.info(f"ThreadWorkflow completed for thread {thread_id}")
         return context
+
+
+@workflow.defn
+class CheckWorkflow:
+    """Executes a scheduled Check in deterministic or AI-assisted mode."""
+
+    def __init__(self) -> None:
+        self.state: dict = {
+            "check_id": None,
+            "execution_id": None,
+            "status": "pending",
+            "mode": None,
+            "cumulative_tokens": 0,
+            "cumulative_cost": "0.00",
+            "last_failure_reason": None,
+            "last_failure_detail": None,
+        }
+
+    @workflow.query
+    def get_status(self) -> dict:
+        return self.state
+
+    @workflow.run
+    async def run(
+        self,
+        check_id: str,
+        version_id: str,
+        dry_run: bool = False,
+    ) -> dict:
+        workflow.logger.info(f"Starting CheckWorkflow for check {check_id}")
+        self.state["check_id"] = check_id
+        self.state["status"] = "initializing"
+
+        context = await workflow.execute_activity(
+            "load_check_context",
+            args=[check_id, version_id],
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=1),
+                maximum_interval=timedelta(seconds=5),
+                maximum_attempts=3,
+            ),
+        )
+        self.state["mode"] = context.get("execution_mode", "deterministic")
+        self.state.update(context)
+
+        execution = await workflow.execute_activity(
+            "update_check_execution",
+            args=[None, "running", "unknown", {}],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+        self.state["execution_id"] = execution.get("id")
+
+        capability_results = []
+        capabilities = context.get("evaluation_config", {}).get("capabilities", [])
+        if capabilities:
+            self.state["status"] = "executing_capabilities"
+
+            async def execute_one_capability(cap_config: dict) -> dict:
+                try:
+                    result = await workflow.execute_activity(
+                        "execute_capability",
+                        args=[
+                            check_id,
+                            self.state["execution_id"],
+                            cap_config["name"],
+                            cap_config.get("parameters", {}),
+                            cap_config.get("marvin_id", ""),
+                        ],
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=1),
+                            maximum_interval=timedelta(seconds=30),
+                            maximum_attempts=3,
+                        ),
+                    )
+                    return {"capability": cap_config["name"], "success": True, "result": result}
+                except Exception as exc:
+                    return {"capability": cap_config["name"], "success": False, "error": str(exc)}
+
+            capability_results = await asyncio.gather(
+                *(execute_one_capability(capability) for capability in capabilities)
+            )
+
+        evaluation_config = context.get("evaluation_config", {})
+
+        if self.state["mode"] == "deterministic":
+            self.state["status"] = "evaluating"
+            rules = evaluation_config.get("rules", [])
+            execution_result = {
+                "capabilities": capability_results,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            evaluation = await workflow.execute_activity(
+                "evaluate_check",
+                args=[check_id, execution_result, rules],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+        else:
+            self.state["status"] = "ai_evaluating"
+            system_prompt = (
+                "You are evaluating infrastructure health check results. "
+                "Review the collected evidence and provide a structured assessment.\n\n"
+                "Respond with JSON containing:\n"
+                "- state: one of healthy/degraded/critical/unknown\n"
+                "- confidence: float 0.0-1.0\n"
+                "- findings: list of {severity, message, path, expected, actual}\n"
+                "- summary: brief text summary"
+            )
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps({"capabilities": capability_results})},
+            ]
+            resp = await workflow.execute_activity(
+                "call_llm",
+                args=[check_id, messages],
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=30),
+                    maximum_attempts=3,
+                ),
+            )
+            evaluation = self._parse_llm_evaluation(resp.get("content", ""))
+            self.state["cumulative_tokens"] += resp.get("input_tokens", 0) + resp.get(
+                "output_tokens", 0
+            )
+            self.state["cumulative_cost"] = str(
+                Decimal(self.state["cumulative_cost"]) + Decimal(str(resp.get("cost", "0.00")))
+            )
+
+        await workflow.execute_activity(
+            "update_check_execution",
+            args=[
+                self.state["execution_id"],
+                "completed",
+                evaluation.get("state", "unknown"),
+                {
+                    "findings": evaluation.get("findings", []),
+                    "summary": evaluation.get("summary", ""),
+                    "confidence": evaluation.get("confidence", 0.5),
+                    "capabilities": capability_results,
+                },
+            ],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+
+        if not dry_run:
+            await workflow.execute_activity(
+                "dispatch_actions",
+                args=[check_id, self.state["execution_id"], evaluation.get("findings", [])],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+
+        self.state["status"] = "completed"
+        workflow.logger.info(f"CheckWorkflow completed for check {check_id}")
+        return {
+            **self.state,
+            "evaluation": evaluation,
+            "capability_results": capability_results,
+        }
+
+    def _parse_llm_evaluation(self, content: str) -> dict:
+        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+        if json_match:
+            try:
+                return self._normalize_evaluation(json.loads(json_match.group(1)))
+            except json.JSONDecodeError:
+                pass
+
+        try:
+            return self._normalize_evaluation(json.loads(content))
+        except json.JSONDecodeError:
+            pass
+
+        state = "unknown"
+        content_lower = content.lower()
+        if "critical" in content_lower:
+            state = "critical"
+        elif "degraded" in content_lower:
+            state = "degraded"
+        elif "healthy" in content_lower:
+            state = "healthy"
+
+        return {
+            "state": state,
+            "confidence": 0.5,
+            "findings": [{"severity": "warning", "message": content[:500]}],
+            "summary": content[:1000],
+        }
+
+    def _normalize_evaluation(self, evaluation: dict) -> dict:
+        state = evaluation.get("state", "unknown")
+        if state not in {"healthy", "degraded", "critical", "unknown"}:
+            state = "unknown"
+        findings = evaluation.get("findings")
+        if not isinstance(findings, list):
+            findings = []
+        return {
+            "state": state,
+            "confidence": evaluation.get("confidence", 0.5),
+            "findings": findings,
+            "summary": evaluation.get("summary", ""),
+        }
+
+
+@workflow.defn
+class AutonomousInvestigationWorkflow:
+    """Non-interactive LLM-driven investigation for autonomous Checks."""
+
+    def __init__(self) -> None:
+        self.state: dict = {
+            "check_id": None,
+            "execution_id": None,
+            "status": "pending",
+            "iteration_count": 0,
+            "cumulative_tokens": 0,
+            "cumulative_cost": "0.00",
+            "cumulative_context_tokens": 0,
+            "last_failure_reason": None,
+            "last_failure_detail": None,
+        }
+
+    @workflow.query
+    def get_status(self) -> dict:
+        return self.state
+
+    @workflow.run
+    async def run(
+        self,
+        check_id: str,
+        version_id: str,
+        dry_run: bool = False,
+        max_iterations: int = 8,
+    ) -> dict:
+        workflow.logger.info(f"Starting AutonomousInvestigationWorkflow for check {check_id}")
+        self.state["check_id"] = check_id
+        self.state["status"] = "initializing"
+
+        context = await workflow.execute_activity(
+            "load_check_context",
+            args=[check_id, version_id],
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=1),
+                maximum_interval=timedelta(seconds=5),
+                maximum_attempts=3,
+            ),
+        )
+        self.state.update(context)
+
+        execution = await workflow.execute_activity(
+            "update_check_execution",
+            args=[None, "running", "unknown", {}],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+        self.state["execution_id"] = execution.get("id")
+
+        system_prompt = (
+            "You are an autonomous infrastructure investigation agent. "
+            "Your goal is to investigate the following check:\n\n"
+            f"Check: {context.get('check_name', 'Unknown')}\n"
+            f"Goal: {context.get('investigation_goal', 'Investigate and report findings')}\n\n"
+            "You have access to tools to gather information. "
+            "When you have gathered sufficient information, provide a final summary "
+            "with your findings and a health assessment (healthy/degraded/critical/unknown). "
+            "Include confidence score (0.0-1.0) and detailed findings."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Begin investigation."},
+        ]
+        investigation_results = []
+        self.state["status"] = "investigating"
+
+        for iteration in range(max_iterations):
+            self.state["iteration_count"] = iteration + 1
+            workflow.logger.info(f"Autonomous iteration {iteration + 1}/{max_iterations}")
+
+            resp = await workflow.execute_activity(
+                "call_llm",
+                args=[check_id, messages],
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=1),
+                    maximum_interval=timedelta(seconds=30),
+                    maximum_attempts=3,
+                ),
+            )
+            self._track_llm_usage(resp)
+
+            reason = resp.get("reason")
+            if reason:
+                self.state["last_failure_reason"] = reason
+                self.state["last_failure_detail"] = resp.get("error")
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"[LLM_ERROR] The investigation LLM returned {reason}: "
+                            f"{resp.get('error', 'Unknown error')}. "
+                            "Continue with available evidence."
+                        ),
+                    }
+                )
+                investigation_results.append(
+                    {"iteration": iteration + 1, "error": resp.get("error", "")}
+                )
+                break
+
+            tool_calls = resp.get("tool_calls", [])
+            if tool_calls:
+                tool_results = []
+                for tool_call in tool_calls:
+                    tool_result = await workflow.execute_activity(
+                        "execute_llm_tool",
+                        args=[tool_call],
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=RetryPolicy(
+                            initial_interval=timedelta(seconds=1),
+                            maximum_interval=timedelta(seconds=30),
+                            maximum_attempts=3,
+                        ),
+                    )
+                    tool_results.append(tool_result)
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": resp.get("content", ""),
+                        "tool_calls": tool_calls,
+                    }
+                )
+                for tool_call, tool_result in zip(tool_calls, tool_results):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": json.dumps(tool_result),
+                            "tool_call_id": tool_result.get("tool_call_id", tool_call.get("id", ""))
+                            if isinstance(tool_result, dict)
+                            else tool_call.get("id", ""),
+                            "name": tool_call.get("name", ""),
+                        }
+                    )
+                investigation_results.append({"iteration": iteration + 1, "tools": tool_results})
+                continue
+
+            messages.append({"role": "assistant", "content": resp.get("content", "")})
+            investigation_results.append(
+                {"iteration": iteration + 1, "response": resp.get("content", "")}
+            )
+            break
+        else:
+            self.state["status"] = "max_iterations_reached"
+            self.state["last_failure_reason"] = "limit"
+            self.state["last_failure_detail"] = "Maximum investigation iterations reached"
+            workflow.logger.warning(
+                f"Autonomous investigation reached max iterations ({max_iterations})"
+            )
+
+        final_prompt = (
+            "Based on your investigation, provide a structured JSON response with:\n"
+            "- state: one of healthy/degraded/critical/unknown\n"
+            "- confidence: float 0.0-1.0\n"
+            "- findings: list of {severity, message, path, expected, actual}\n"
+            "- summary: brief text summary"
+        )
+        messages.append({"role": "user", "content": final_prompt})
+
+        final_resp = await workflow.execute_activity(
+            "call_llm",
+            args=[check_id, messages],
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=1),
+                maximum_interval=timedelta(seconds=30),
+                maximum_attempts=3,
+            ),
+        )
+        self._track_llm_usage(final_resp)
+
+        evaluation = self._parse_evaluation(final_resp.get("content", ""))
+        await workflow.execute_activity(
+            "update_check_execution",
+            args=[
+                self.state["execution_id"],
+                "completed",
+                evaluation["state"],
+                {
+                    "findings": evaluation["findings"],
+                    "summary": evaluation.get("summary", ""),
+                    "confidence": evaluation.get("confidence", 0.5),
+                },
+            ],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+
+        if not dry_run:
+            await workflow.execute_activity(
+                "dispatch_actions",
+                args=[check_id, self.state["execution_id"], evaluation["findings"]],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+
+        self.state["status"] = "completed"
+        workflow.logger.info(f"AutonomousInvestigationWorkflow completed for check {check_id}")
+        return {
+            **self.state,
+            "evaluation": evaluation,
+            "investigation_results": investigation_results,
+        }
+
+    def _track_llm_usage(self, resp: dict) -> None:
+        input_tokens = resp.get("input_tokens", 0)
+        output_tokens = resp.get("output_tokens", 0)
+        total_tokens = input_tokens + output_tokens
+        self.state["cumulative_tokens"] += total_tokens
+        self.state["cumulative_context_tokens"] += total_tokens
+        self.state["cumulative_cost"] = str(
+            Decimal(self.state["cumulative_cost"]) + Decimal(str(resp.get("cost", "0.00")))
+        )
+
+    def _parse_evaluation(self, content: str) -> dict:
+        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+        if json_match:
+            try:
+                return self._normalize_evaluation(json.loads(json_match.group(1)))
+            except json.JSONDecodeError:
+                pass
+
+        try:
+            return self._normalize_evaluation(json.loads(content))
+        except json.JSONDecodeError:
+            pass
+
+        state = "unknown"
+        content_lower = content.lower()
+        if "critical" in content_lower:
+            state = "critical"
+        elif "degraded" in content_lower:
+            state = "degraded"
+        elif "healthy" in content_lower:
+            state = "healthy"
+
+        return {
+            "state": state,
+            "confidence": 0.5,
+            "findings": [{"severity": "warning", "message": content[:500]}],
+            "summary": content[:1000],
+        }
+
+    def _normalize_evaluation(self, evaluation: dict) -> dict:
+        state = evaluation.get("state", "unknown")
+        if state not in {"healthy", "degraded", "critical", "unknown"}:
+            state = "unknown"
+        findings = evaluation.get("findings")
+        if not isinstance(findings, list):
+            findings = []
+        return {
+            "state": state,
+            "confidence": evaluation.get("confidence", 0.5),
+            "findings": findings,
+            "summary": evaluation.get("summary", ""),
+        }
 
 
 @workflow.defn

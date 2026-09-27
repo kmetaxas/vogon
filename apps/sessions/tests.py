@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, Mock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.test.testcases import TransactionTestCase
 from django.urls import reverse
 from openai import APIError, APITimeoutError
@@ -31,7 +31,11 @@ from services.temporal_workers.activities import (
     record_agent_event,
     set_session_status,
 )
-from services.temporal_workers.workflows import TroubleshootWorkflow
+from services.temporal_workers.workflows import (
+    AutonomousInvestigationWorkflow,
+    CheckWorkflow,
+    TroubleshootWorkflow,
+)
 
 
 class SessionViewTests(TestCase):
@@ -543,6 +547,248 @@ class TroubleshootWorkflowTests(TestCase):
             execute_activity.await_args_list[create_idx].kwargs["args"],
             ["thread-2", "slashdot.org is reachable.", 0, 0, "0.00", ""],
         )
+
+
+class CheckWorkflowTests(SimpleTestCase):
+    def test_run_executes_capabilities_and_evaluates_deterministic_check(self):
+        workflow_instance = CheckWorkflow()
+        context = {
+            "check_name": "API Health",
+            "execution_mode": "deterministic",
+            "evaluation_config": {
+                "capabilities": [
+                    {
+                        "name": "http_check",
+                        "parameters": {"url": "https://example.test/health"},
+                        "marvin_id": "marvin-1",
+                    }
+                ],
+                "rules": [{"path": "status", "op": "eq", "value": "ok"}],
+            },
+        }
+        evaluation = {
+            "state": "healthy",
+            "confidence": 0.95,
+            "findings": [],
+            "summary": "OK",
+        }
+        execute_activity = AsyncMock(
+            side_effect=[
+                context,
+                {"id": "execution-1"},
+                {"status": "ok"},
+                evaluation,
+                {"id": "execution-1"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-1", "version-1"))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["mode"], "deterministic")
+        self.assertEqual(result["execution_id"], "execution-1")
+        self.assertEqual(result["evaluation"], evaluation)
+        self.assertEqual(result["capability_results"][0]["capability"], "http_check")
+        self.assertTrue(result["capability_results"][0]["success"])
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(
+            names,
+            [
+                "load_check_context",
+                "update_check_execution",
+                "execute_capability",
+                "evaluate_check",
+                "update_check_execution",
+                "dispatch_actions",
+            ],
+        )
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("execute_capability")].kwargs["args"],
+            [
+                "check-1",
+                "execution-1",
+                "http_check",
+                {"url": "https://example.test/health"},
+                "marvin-1",
+            ],
+        )
+        evaluate_args = execute_activity.await_args_list[names.index("evaluate_check")].kwargs[
+            "args"
+        ]
+        self.assertEqual(evaluate_args[0], "check-1")
+        self.assertEqual(evaluate_args[1]["capabilities"][0]["result"], {"status": "ok"})
+        self.assertEqual(evaluate_args[2], context["evaluation_config"]["rules"])
+
+    def test_run_uses_llm_for_ai_assisted_check_and_skips_actions_for_dry_run(self):
+        workflow_instance = CheckWorkflow()
+        execute_activity = AsyncMock(
+            side_effect=[
+                {"execution_mode": "ai_assisted", "evaluation_config": {}},
+                {"id": "execution-2"},
+                {
+                    "content": (
+                        '```json\n{"state":"degraded","confidence":0.8,'
+                        '"findings":[{"severity":"warning","message":"slow"}],'
+                        '"summary":"Latency is elevated"}\n```'
+                    ),
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "cost": "0.04",
+                },
+                {"id": "execution-2"},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-2", "version-2", dry_run=True))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["mode"], "ai_assisted")
+        self.assertEqual(result["evaluation"]["state"], "degraded")
+        self.assertEqual(result["evaluation"]["findings"][0]["message"], "slow")
+        self.assertEqual(result["cumulative_tokens"], 18)
+        self.assertEqual(result["cumulative_cost"], "0.04")
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(names.count("call_llm"), 1)
+        self.assertNotIn("dispatch_actions", names)
+        call_llm_args = execute_activity.await_args_list[names.index("call_llm")].kwargs["args"]
+        self.assertEqual(call_llm_args[0], "check-2")
+        self.assertIn("structured assessment", call_llm_args[1][0]["content"])
+
+    def test_parse_llm_evaluation_normalizes_invalid_json_and_fallback_text(self):
+        workflow_instance = CheckWorkflow()
+
+        normalized = workflow_instance._parse_llm_evaluation(
+            '{"state":"invalid","confidence":0.2,"findings":"bad","summary":"Nope"}'
+        )
+        fallback = workflow_instance._parse_llm_evaluation("Critical failure in api service")
+
+        self.assertEqual(normalized["state"], "unknown")
+        self.assertEqual(normalized["findings"], [])
+        self.assertEqual(fallback["state"], "critical")
+        self.assertEqual(fallback["confidence"], 0.5)
+
+
+class AutonomousInvestigationWorkflowTests(SimpleTestCase):
+    def test_run_executes_tools_and_returns_structured_evaluation(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = {"id": "tc1", "name": "query_prometheus", "arguments": {"query": "up"}}
+        execute_activity = AsyncMock(
+            side_effect=[
+                {"check_name": "API Health", "investigation_goal": "Verify API health"},
+                {"id": "execution-1"},
+                {
+                    "content": "Need metrics",
+                    "tool_calls": [tool_call],
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cost": "0.01",
+                },
+                {"tool_call_id": "tc1", "result": {"status": "up"}},
+                {
+                    "content": "API looks healthy",
+                    "tool_calls": [],
+                    "input_tokens": 8,
+                    "output_tokens": 4,
+                    "cost": "0.02",
+                },
+                {
+                    "content": '{"state":"healthy","confidence":0.9,"findings":[],"summary":"OK"}',
+                    "tool_calls": [],
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "cost": "0.03",
+                },
+                {"id": "execution-1"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-1", "version-1"))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["execution_id"], "execution-1")
+        self.assertEqual(result["iteration_count"], 2)
+        self.assertEqual(result["cumulative_tokens"], 37)
+        self.assertEqual(result["cumulative_cost"], "0.06")
+        self.assertEqual(result["evaluation"]["state"], "healthy")
+        self.assertEqual(result["investigation_results"][0]["tools"][0]["result"]["status"], "up")
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(names.count("call_llm"), 3)
+        self.assertIn("execute_llm_tool", names)
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("execute_llm_tool")].kwargs["args"],
+            [tool_call],
+        )
+        self.assertEqual(names[-1], "dispatch_actions")
+
+    def test_run_marks_max_iterations_and_skips_actions_for_dry_run(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = {"id": "tc1", "name": "find_tools", "arguments": {"query": "disk"}}
+        execute_activity = AsyncMock(
+            side_effect=[
+                {"check_name": "Disk", "investigation_goal": "Check disk"},
+                {"id": "execution-2"},
+                {"content": "Need tool", "tool_calls": [tool_call]},
+                {"tool_call_id": "tc1", "result": [{"name": "check_disk"}]},
+                {
+                    "content": "Critical: max iteration evidence is insufficient",
+                    "tool_calls": [],
+                },
+                {"id": "execution-2"},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(
+                workflow_instance.run("check-2", "version-2", dry_run=True, max_iterations=1)
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["last_failure_reason"], "limit")
+        self.assertEqual(result["evaluation"]["state"], "critical")
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertNotIn("dispatch_actions", names)
+
+    def test_parse_evaluation_accepts_markdown_json_and_fallback_text(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+
+        parsed = workflow_instance._parse_evaluation(
+            '```json\n{"state":"degraded","confidence":0.7,"findings":[{"message":"slow"}],"summary":"Slow"}\n```'
+        )
+        fallback = workflow_instance._parse_evaluation("Critical failure in api service")
+
+        self.assertEqual(parsed["state"], "degraded")
+        self.assertEqual(parsed["findings"][0]["message"], "slow")
+        self.assertEqual(fallback["state"], "critical")
+        self.assertEqual(fallback["confidence"], 0.5)
 
 
 class TemporalActivityTests(TransactionTestCase):

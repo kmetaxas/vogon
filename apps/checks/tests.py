@@ -2,6 +2,7 @@
 
 from django.test import TestCase
 
+from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
 from apps.checks.models import (
     Check,
     CheckActionLog,
@@ -22,6 +23,120 @@ def _make_check(organization, name="Check", **kwargs):
     }
     defaults.update(kwargs)
     return Check.objects.create(**defaults)
+
+
+class EvaluationEngineTests(TestCase):
+    def test_numeric_comparison_gt_fires(self):
+        result = {"cpu_usage": 0.85}
+        rules = [
+            {
+                "type": "numeric_comparison",
+                "path": "cpu_usage",
+                "operator": "gt",
+                "threshold": 0.8,
+                "severity": "critical",
+            }
+        ]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.CRITICAL)
+        self.assertEqual(len(eval_result.findings), 1)
+        self.assertEqual(eval_result.findings[0].severity, Severity.CRITICAL)
+
+    def test_numeric_comparison_no_fire(self):
+        result = {"cpu_usage": 0.7}
+        rules = [
+            {
+                "type": "numeric_comparison",
+                "path": "cpu_usage",
+                "operator": "gt",
+                "threshold": 0.8,
+                "severity": "critical",
+            }
+        ]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.HEALTHY)
+        self.assertEqual(len(eval_result.findings), 0)
+
+    def test_aggregation_avg_fires(self):
+        result = {"nodes": [{"mem": 0.7}, {"mem": 0.9}, {"mem": 0.8}]}
+        rules = [
+            {
+                "type": "aggregation",
+                "path": "nodes.*.mem",
+                "operator": "avg",
+                "threshold": 0.79,
+                "comparison_operator": "gt",
+                "severity": "critical",
+            }
+        ]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.CRITICAL)
+        self.assertEqual(len(eval_result.findings), 1)
+        self.assertAlmostEqual(eval_result.findings[0].actual, 0.8)
+
+    def test_boolean_expression_fires(self):
+        result = {"cpu_usage": 0.9, "memory_usage": 0.95}
+        rules = [
+            {
+                "type": "boolean_expression",
+                "expression": "critical_cpu and critical_memory",
+                "conditions": [
+                    {"path": "cpu_usage", "operator": "gt", "threshold": 0.8},
+                    {"path": "memory_usage", "operator": "gt", "threshold": 0.9},
+                ],
+            }
+        ]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.CRITICAL)
+        self.assertEqual(len(eval_result.findings), 1)
+        self.assertEqual(eval_result.findings[0].severity, Severity.CRITICAL)
+
+    def test_presence_missing(self):
+        result = {"errors": None}
+        rules = [{"type": "presence", "path": "errors", "expected": False}]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.HEALTHY)
+
+    def test_invalid_rule_raises(self):
+        result = {}
+        rules = [
+            {
+                "type": "numeric_comparison",
+                "path": "missing",
+                "operator": "gt",
+                "threshold": 0.8,
+            }
+        ]
+        with self.assertRaises(EvaluationError):
+            EvaluationEngine.evaluate(result, rules)
+
+    def test_does_not_mutate_input(self):
+        result = {"cpu_usage": 0.85}
+        original = result.copy()
+        rules = [
+            {
+                "type": "numeric_comparison",
+                "path": "cpu_usage",
+                "operator": "gt",
+                "threshold": 0.8,
+            }
+        ]
+        EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(result, original)
+
+    def test_nested_path(self):
+        result = {"results": [{"value": {"cpu": 0.9}}]}
+        rules = [
+            {
+                "type": "numeric_comparison",
+                "path": "results.0.value.cpu",
+                "operator": "gt",
+                "threshold": 0.8,
+                "severity": "critical",
+            }
+        ]
+        eval_result = EvaluationEngine.evaluate(result, rules)
+        self.assertEqual(eval_result.state, HealthState.CRITICAL)
 
 
 class CheckAPITests(TestCase):
