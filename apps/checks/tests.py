@@ -1,5 +1,6 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
+import asyncio
 import importlib
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -581,6 +582,162 @@ class CheckScheduleLifecycleTests(TestCase):
         self.assertTrue(Check.objects.filter(name="Offline Check").exists())
 
 
+class CheckIntegrationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="int_user", password="pass")
+        self.organization = Organization.objects.create(name="Int Org", slug="int-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
+    def test_check_lifecycle_deterministic(self, mock_create_schedule):
+        mock_create_schedule.return_value = {"schedule_id": "check-int", "status": "created"}
+
+        response = self.client.post(
+            "/api/checks/",
+            {
+                "organization": str(self.organization.id),
+                "name": "Integration Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "60",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": {
+                    "capabilities": [{"name": "cpu.check", "parameters": {}}],
+                    "rules": [
+                        {
+                            "type": "numeric_comparison",
+                            "path": "cpu",
+                            "operator": "gt",
+                            "threshold": 0.8,
+                            "severity": "critical",
+                        }
+                    ],
+                },
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        check = Check.objects.get(name="Integration Check")
+        self.assertEqual(check.execution_mode, Check.ExecutionMode.DETERMINISTIC)
+        mock_create_schedule.assert_called_once()
+
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+            evaluation_result={"findings": [{"severity": "critical", "message": "CPU high"}]},
+        )
+        self.assertEqual(execution.health_state, CheckExecution.HealthState.CRITICAL)
+
+        result = EvaluationEngine.evaluate({"cpu": 0.85}, check.evaluation_config["rules"])
+        self.assertEqual(result.state, HealthState.CRITICAL)
+
+        ActionDispatcher = _action_dispatcher()
+        check.notification_config = {
+            "actions": [
+                {
+                    "type": "webhook",
+                    "target": "https://example.com",
+                    "condition": "on_completion",
+                }
+            ]
+        }
+        check.save()
+        finding_dicts = [
+            {"severity": f.severity.value, "message": f.message, "path": f.path}
+            for f in result.findings
+        ]
+        logs = ActionDispatcher.dispatch(check, execution, finding_dicts)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].action_type, CheckActionLog.ActionType.WEBHOOK)
+
+    @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
+    def test_check_lifecycle_ai_assisted(self, mock_create_schedule):
+        mock_create_schedule.return_value = {"schedule_id": "check-ai", "status": "created"}
+
+        response = self.client.post(
+            "/api/checks/",
+            {
+                "organization": str(self.organization.id),
+                "name": "AI Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "120",
+                "execution_mode": Check.ExecutionMode.AI_ASSISTED,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        check = Check.objects.get(name="AI Check")
+        self.assertEqual(check.execution_mode, Check.ExecutionMode.AI_ASSISTED)
+        mock_create_schedule.assert_called_once()
+
+    def test_check_scheduler_workflow_selection(self):
+        from services.checks.scheduler import CheckScheduler
+        from services.temporal_workers.workflows import (
+            AutonomousInvestigationWorkflow,
+            CheckWorkflow,
+        )
+
+        det_check = _make_check(
+            self.organization,
+            name="Deterministic Integration",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+        )
+        ai_check = _make_check(
+            self.organization,
+            name="AI Integration",
+            execution_mode=Check.ExecutionMode.AI_ASSISTED,
+        )
+        auto_check = _make_check(
+            self.organization,
+            name="Autonomous Integration",
+            execution_mode=Check.ExecutionMode.AUTONOMOUS,
+        )
+
+        self.assertEqual(CheckScheduler._workflow_for_mode(det_check.execution_mode), CheckWorkflow)
+        self.assertEqual(CheckScheduler._workflow_for_mode(ai_check.execution_mode), CheckWorkflow)
+        self.assertEqual(
+            CheckScheduler._workflow_for_mode(auto_check.execution_mode),
+            AutonomousInvestigationWorkflow,
+        )
+
+    @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
+    def test_check_workflow_execution_is_mocked_by_scheduler_trigger(self, mock_get_client):
+        from services.checks.scheduler import CheckScheduler, TASK_QUEUE
+        from services.temporal_workers.workflows import CheckWorkflow
+
+        check = _make_check(self.organization, name="Mocked Workflow Check")
+        mock_client = AsyncMock()
+        mock_client.execute_workflow.return_value = {"workflow_id": "mock-workflow"}
+        mock_get_client.return_value = mock_client
+
+        result = asyncio.run(CheckScheduler.trigger_now(check))
+
+        self.assertEqual(result, {"workflow_id": "mock-workflow", "status": "triggered"})
+        mock_client.execute_workflow.assert_awaited_once_with(
+            CheckWorkflow.run,
+            id=mock_client.execute_workflow.call_args.kwargs["id"],
+            args=[str(check.id), None, False],
+            task_queue=TASK_QUEUE,
+        )
+
+    def test_concurrent_limit_blocks_at_max(self):
+        check = _make_check(self.organization)
+        from django.conf import settings
+
+        max_count = getattr(settings, "CHECK_MAX_CONCURRENT_PER_ORG", 5)
+        for _ in range(max_count):
+            CheckExecution.objects.create(
+                check=check,
+                execution_status=CheckExecution.ExecutionStatus.RUNNING,
+            )
+        self.assertFalse(CheckExecution.can_execute(self.organization))
+
+
 class CheckExecutionQueryTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="exec_q_user", password="pass")
@@ -1016,3 +1173,53 @@ class CheckCleanupTests(TestCase):
         call_command("cleanup_checks")
 
         self.assertTrue(CheckVersion.objects.filter(id=recent.id).exists())
+
+
+class CheckUIViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="ui_user", password="pass")
+        self.organization = Organization.objects.create(name="UI Org", slug="ui-org")
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.organization, role=OrganizationMembership.Role.OWNER
+        )
+        self.client.force_login(self.user)
+
+    def test_check_list_view(self):
+        _make_check(self.organization, name="UI Check")
+        response = self.client.get("/checks/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "UI Check")
+
+    def test_check_detail_view(self):
+        check = _make_check(self.organization, name="Detail Check")
+        response = self.client.get(f"/checks/{check.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Detail Check")
+
+    def test_check_create_view(self):
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Created Via UI",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Check.objects.filter(name="Created Via UI").exists())
+
+    def test_check_edit_view(self):
+        check = _make_check(self.organization, name="Edit Me")
+        response = self.client.post(
+            f"/checks/{check.id}/edit/",
+            {
+                "name": "Edited Name",
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "execution_mode": check.execution_mode,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check.refresh_from_db()
+        self.assertEqual(check.name, "Edited Name")

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{% if check %}Edit{% else %}New{% endif %} Check{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>{% if check %}Edit{% else %}New{% endif %} Check</h1>
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-group">
+            <label>Name</label>
+            <input type="text" name="name" value="{{ check.name|default:'' }}" required>
+        </div>
+        <div class="form-group">
+            <label>Description</label>
+            <textarea name="description">{{ check.description|default:'' }}</textarea>
+        </div>
+        <div class="form-group">
+            <label>Schedule Type</label>
+            <select name="schedule_type">
+                {% for value, label in schedule_types %}
+                <option value="{{ value }}" {% if check and check.schedule_type == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Schedule Expression</label>
+            <input type="text" name="schedule_expression" value="{{ check.schedule_expression|default:'60' }}" required>
+        </div>
+        <div class="form-group">
+            <label>Timezone</label>
+            <input type="text" name="timezone" value="{{ check.timezone|default:'UTC' }}">
+        </div>
+        <div class="form-group">
+            <label>Execution Mode</label>
+            <select name="execution_mode">
+                {% for value, label in execution_modes %}
+                <option value="{{ value }}" {% if check and check.execution_mode == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}

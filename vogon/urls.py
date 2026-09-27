@@ -8,5 +8,6 @@ urlpatterns = [
     path("marvins/", include("apps.marvins.urls")),
     path("sessions/", include("apps.sessions.urls")),
     path("designs/", include("apps.infradesigns.urls")),
+    path("checks/", include("apps.checks.urls")),
     path("", include("apps.core.urls")),
 ]

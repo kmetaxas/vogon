@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ check.name }} — Check Detail{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>{{ check.name }}</h1>
+    <p>{{ check.description }}</p>
+    <div class="meta">
+        <span>Mode: {{ check.get_execution_mode_display }}</span>
+        <span>Schedule: {{ check.get_schedule_type_display }} {{ check.schedule_expression }}</span>
+        <span>Status: {% if check.enabled %}Enabled{% else %}Disabled{% endif %}</span>
+    </div>
+    <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
+
+    <h2>Recent Executions</h2>
+    <table class="table">
+        <thead><tr><th>Time</th><th>Status</th><th>State</th></tr></thead>
+        <tbody>
+            {% for exec in executions %}
+            <tr>
+                <td>{{ exec.triggered_at }}</td>
+                <td>{{ exec.get_execution_status_display }}</td>
+                <td>{{ exec.get_health_state_display }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
