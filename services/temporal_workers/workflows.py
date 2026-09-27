@@ -878,9 +878,11 @@ class AutonomousInvestigationWorkflow:
                         {
                             "role": "tool",
                             "content": json.dumps(tool_result),
-                            "tool_call_id": tool_result.get("tool_call_id", tool_call.get("id", ""))
-                            if isinstance(tool_result, dict)
-                            else tool_call.get("id", ""),
+                            "tool_call_id": (
+                                tool_result.get("tool_call_id", tool_call.get("id", ""))
+                                if isinstance(tool_result, dict)
+                                else tool_call.get("id", "")
+                            ),
                             "name": tool_call.get("name", ""),
                         }
                     )

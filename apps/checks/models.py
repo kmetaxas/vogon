@@ -3,7 +3,9 @@
 import uuid
 from decimal import Decimal
 
+from croniter import croniter
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from apps.core.models import Organization
@@ -87,6 +89,23 @@ class Check(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.organization.slug})"
+
+    def clean(self):
+        super().clean()
+        expression = (self.schedule_expression or "").strip()
+        if not expression:
+            raise ValidationError("Schedule expression cannot be empty.")
+
+        if self.schedule_type == self.ScheduleType.CRON:
+            if not croniter.is_valid(expression):
+                raise ValidationError(f"Invalid cron expression: {expression}")
+        elif self.schedule_type == self.ScheduleType.INTERVAL:
+            try:
+                seconds = int(expression)
+            except (TypeError, ValueError):
+                raise ValidationError("Interval must be a positive integer (seconds).")
+            if seconds <= 0:
+                raise ValidationError("Interval must be a positive integer (seconds).")
 
 
 class CheckVersion(models.Model):

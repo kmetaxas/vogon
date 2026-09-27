@@ -3,12 +3,13 @@
 import asyncio
 import importlib
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 from django.core import mail
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.test.testcases import TransactionTestCase
 from django.utils import timezone
 
 from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
@@ -20,6 +21,7 @@ from apps.checks.models import (
     CheckVersion,
 )
 from apps.core.models import Organization, OrganizationMembership, User
+from services.temporal_workers.activities import call_llm, dispatch_actions
 
 
 def _make_check(organization, name="Check", **kwargs):
@@ -222,8 +224,8 @@ class ActionDispatcherTests(TestCase):
         self.check.notification_config = {"actions": actions}
         self.check.save()
 
-        ActionDispatcher = _action_dispatcher()
-        logs = ActionDispatcher.dispatch(self.check, execution, [])
+        action_dispatcher = _action_dispatcher()
+        logs = action_dispatcher.dispatch(self.check, execution, [])
 
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].action_type, "email")
@@ -245,8 +247,8 @@ class ActionDispatcherTests(TestCase):
         self.check.notification_config = {"actions": actions}
         self.check.save()
 
-        ActionDispatcher = _action_dispatcher()
-        logs = ActionDispatcher.dispatch(self.check, execution, [])
+        action_dispatcher = _action_dispatcher()
+        logs = action_dispatcher.dispatch(self.check, execution, [])
 
         self.assertEqual(len(logs), 1)
 
@@ -267,10 +269,10 @@ class ActionDispatcherTests(TestCase):
         self.check.notification_config = {"actions": actions}
         self.check.save()
 
-        ActionDispatcher = _action_dispatcher()
+        action_dispatcher = _action_dispatcher()
 
-        ActionDispatcher.dispatch(self.check, execution, [])
-        logs = ActionDispatcher.dispatch(self.check, execution, [])
+        action_dispatcher.dispatch(self.check, execution, [])
+        logs = action_dispatcher.dispatch(self.check, execution, [])
 
         self.assertEqual(len(logs), 0)
 
@@ -292,13 +294,13 @@ class ActionDispatcherTests(TestCase):
         self.check.notification_config = {"actions": actions}
         self.check.save()
 
-        ActionDispatcher = _action_dispatcher()
-        logs = ActionDispatcher.dispatch(self.check, execution, findings)
+        action_dispatcher = _action_dispatcher()
+        logs = action_dispatcher.dispatch(self.check, execution, findings)
 
         self.assertEqual(len(logs), 1)
 
     def test_retry_manager(self):
-        RetryManager = _retry_manager()
+        retry_manager = _retry_manager()
         execution = CheckExecution.objects.create(check=self.check)
         action_log = CheckActionLog.objects.create(
             check=self.check,
@@ -308,9 +310,9 @@ class ActionDispatcherTests(TestCase):
             retry_count=0,
         )
 
-        self.assertTrue(RetryManager.should_retry(action_log))
-        self.assertEqual(RetryManager.backoff_seconds(0), 5)
-        self.assertEqual(RetryManager.backoff_seconds(2), 20)
+        self.assertTrue(retry_manager.should_retry(action_log))
+        self.assertEqual(retry_manager.backoff_seconds(0), 5)
+        self.assertEqual(retry_manager.backoff_seconds(2), 20)
 
 
 class CheckAPITests(TestCase):
@@ -636,7 +638,7 @@ class CheckIntegrationTests(TestCase):
         result = EvaluationEngine.evaluate({"cpu": 0.85}, check.evaluation_config["rules"])
         self.assertEqual(result.state, HealthState.CRITICAL)
 
-        ActionDispatcher = _action_dispatcher()
+        action_dispatcher = _action_dispatcher()
         check.notification_config = {
             "actions": [
                 {
@@ -651,7 +653,7 @@ class CheckIntegrationTests(TestCase):
             {"severity": f.severity.value, "message": f.message, "path": f.path}
             for f in result.findings
         ]
-        logs = ActionDispatcher.dispatch(check, execution, finding_dicts)
+        logs = action_dispatcher.dispatch(check, execution, finding_dicts)
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].action_type, CheckActionLog.ActionType.WEBHOOK)
 
@@ -707,7 +709,7 @@ class CheckIntegrationTests(TestCase):
 
     @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
     def test_check_workflow_execution_is_mocked_by_scheduler_trigger(self, mock_get_client):
-        from services.checks.scheduler import CheckScheduler, TASK_QUEUE
+        from services.checks.scheduler import TASK_QUEUE, CheckScheduler
         from services.temporal_workers.workflows import CheckWorkflow
 
         check = _make_check(self.organization, name="Mocked Workflow Check")
@@ -1223,3 +1225,218 @@ class CheckUIViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         check.refresh_from_db()
         self.assertEqual(check.name, "Edited Name")
+
+
+class CheckScheduleValidationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="val_user", password="pass")
+        self.organization = Organization.objects.create(name="Val Org", slug="val-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def _payload(self, **overrides):
+        data = {
+            "organization": str(self.organization.id),
+            "name": "Validation Check",
+            "schedule_type": Check.ScheduleType.INTERVAL,
+            "schedule_expression": "60",
+            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+        }
+        data.update(overrides)
+        return data
+
+    def test_empty_schedule_expression_rejected(self):
+        response = self.client.post(
+            "/api/checks/", self._payload(schedule_expression=""), content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Schedule expression cannot be empty.", str(response.json()))
+
+    def test_whitespace_schedule_expression_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="   "),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Schedule expression cannot be empty.", str(response.json()))
+
+    def test_invalid_cron_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(
+                schedule_type=Check.ScheduleType.CRON,
+                schedule_expression="not a cron",
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid cron expression", str(response.json()))
+
+    def test_valid_cron_accepted(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(
+                schedule_type=Check.ScheduleType.CRON,
+                schedule_expression="0 */6 * * *",
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_non_integer_interval_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="abc"),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Interval must be a positive integer", str(response.json()))
+
+    def test_negative_interval_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="-5"),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Interval must be a positive integer", str(response.json()))
+
+    def test_non_positive_interval_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="-1"),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Interval must be a positive integer", str(response.json()))
+
+    def test_zero_interval_rejected(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="0"),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Interval must be a positive integer", str(response.json()))
+
+    def test_valid_interval_accepted(self):
+        response = self.client.post(
+            "/api/checks/",
+            self._payload(schedule_expression="120"),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_model_clean_rejects_empty(self):
+        from django.core.exceptions import ValidationError
+
+        check = Check(
+            organization=self.organization,
+            name="Clean Empty",
+            schedule_type=Check.ScheduleType.INTERVAL,
+            schedule_expression="",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+        )
+        with self.assertRaises(ValidationError):
+            check.clean()
+
+    def test_model_clean_rejects_invalid_cron(self):
+        from django.core.exceptions import ValidationError
+
+        check = Check(
+            organization=self.organization,
+            name="Clean Cron",
+            schedule_type=Check.ScheduleType.CRON,
+            schedule_expression="bad cron",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+        )
+        with self.assertRaises(ValidationError):
+            check.clean()
+
+    def test_model_clean_rejects_bad_interval(self):
+        from django.core.exceptions import ValidationError
+
+        check = Check(
+            organization=self.organization,
+            name="Clean Interval",
+            schedule_type=Check.ScheduleType.INTERVAL,
+            schedule_expression="nope",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+        )
+        with self.assertRaises(ValidationError):
+            check.clean()
+
+    def test_model_clean_accepts_valid(self):
+        check = Check(
+            organization=self.organization,
+            name="Clean Valid",
+            schedule_type=Check.ScheduleType.CRON,
+            schedule_expression="0 9 * * *",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+        )
+        check.clean()
+
+
+class DispatchActionsActivityTests(TransactionTestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(name="DA Org", slug="da-org")
+        self.check = _make_check(self.organization, name="DA Check")
+
+    def test_dispatch_actions_uses_action_dispatcher(self):
+        execution = CheckExecution.objects.create(check=self.check)
+        fake_log = MagicMock()
+        fake_log.id = "log-1"
+        fake_log.action_type = "email"
+        fake_log.delivery_status = "sent"
+
+        with patch(
+            "services.checks.actions.ActionDispatcher.dispatch",
+            return_value=[fake_log],
+        ) as mock_dispatch:
+            result = asyncio.run(dispatch_actions(str(self.check.id), str(execution.id), []))
+
+        mock_dispatch.assert_called_once()
+        self.assertFalse(result["dry_run"])
+        self.assertEqual(
+            result["dispatched"],
+            [{"action_id": "log-1", "action_type": "email", "status": "sent"}],
+        )
+
+    def test_dispatch_actions_dry_run_skips_dispatcher(self):
+        execution = CheckExecution.objects.create(check=self.check)
+
+        with patch("services.checks.actions.ActionDispatcher.dispatch") as mock_dispatch:
+            result = asyncio.run(
+                dispatch_actions(str(self.check.id), str(execution.id), [], dry_run=True)
+            )
+
+        mock_dispatch.assert_not_called()
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["dispatched"], [])
+
+
+class CallLLMNoThreadTests(TransactionTestCase):
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_without_thread_id_uses_organization(self, mock_get_client):
+        from services.llm.base import LLMResponse
+
+        organization = Organization.objects.create(name="NoThread Org", slug="nothread-org")
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        result = asyncio.run(
+            call_llm(
+                thread_id=None,
+                messages=[{"role": "user", "content": "hi"}],
+                organization_id=str(organization.id),
+            )
+        )
+
+        self.assertEqual(result["content"], "ok")
+        mock_get_client.assert_called_once_with(str(organization.id), None)

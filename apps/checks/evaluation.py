@@ -1,18 +1,18 @@
 """Deterministic evaluation engine for Check results."""
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class HealthState(str, Enum):
+class HealthState(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     CRITICAL = "critical"
     UNKNOWN = "unknown"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"

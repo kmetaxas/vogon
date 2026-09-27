@@ -1,3 +1,4 @@
+from croniter import croniter
 from rest_framework import serializers
 
 from apps.checks.models import (
@@ -49,6 +50,37 @@ class CheckSerializer(serializers.ModelSerializer):
             "target_scope_name",
             "created_by_username",
         ]
+        extra_kwargs = {
+            "schedule_expression": {"allow_blank": True},
+        }
+
+    def validate(self, attrs):
+        schedule_expression = attrs.get(
+            "schedule_expression",
+            getattr(self.instance, "schedule_expression", None),
+        )
+        schedule_type = attrs.get(
+            "schedule_type",
+            getattr(self.instance, "schedule_type", None),
+        )
+
+        if schedule_expression is None or not str(schedule_expression).strip():
+            raise serializers.ValidationError("Schedule expression cannot be empty.")
+
+        expression = str(schedule_expression).strip()
+
+        if schedule_type == Check.ScheduleType.CRON:
+            if not croniter.is_valid(expression):
+                raise serializers.ValidationError(f"Invalid cron expression: {expression}")
+        elif schedule_type == Check.ScheduleType.INTERVAL:
+            try:
+                seconds = int(expression)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError("Interval must be a positive integer (seconds).")
+            if seconds <= 0:
+                raise serializers.ValidationError("Interval must be a positive integer (seconds).")
+
+        return attrs
 
 
 class CheckVersionSerializer(serializers.ModelSerializer):

@@ -22,7 +22,6 @@ from services.temporal_workers.workflows import (
     CheckWorkflow,
 )
 
-
 TASK_QUEUE = os.environ.get("TEMPORAL_TASK_QUEUE", "vogon")
 
 

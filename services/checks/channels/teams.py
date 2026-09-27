@@ -63,12 +63,6 @@ class TeamsChannel:
             if execution and execution.evaluation_result
             else []
         )
-        summary = (
-            execution.evaluation_result.get("summary", "")
-            if execution and execution.evaluation_result
-            else ""
-        )
-
         facts = []
         for finding in findings[:5]:  # Limit to 5 findings
             facts.append(
@@ -101,7 +95,9 @@ class TeamsChannel:
                     "targets": [
                         {
                             "os": "default",
-                            "uri": f"/checks/{check.id}/executions/{execution.id if execution else ''}",
+                            "uri": (
+                                f"/checks/{check.id}/executions/{execution.id if execution else ''}"
+                            ),
                         }
                     ],
                 }

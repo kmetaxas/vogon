@@ -393,13 +393,21 @@ def _build_llm_context(thread_id: str, user_message: dict) -> dict:
 
 @activity.defn
 async def call_llm(
-    thread_id: str, messages: list[dict], llm_provider_id: str | None = None
+    thread_id: str | None = None,
+    messages: list[dict] | None = None,
+    llm_provider_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict:
     """Call the LLM and return the response.
 
     ``llm_provider_id`` is an optional explicit provider override (used by Check
     workflows, which carry their own per-Check provider). When omitted, the
     provider configured on the Thread's session is used.
+
+    ``thread_id`` is optional: Check workflows have no Thread, so they pass
+    ``organization_id`` instead. When ``thread_id`` is omitted, all session
+    budget checks are skipped and ``organization_id`` is used to resolve the
+    LLM client.
     """
     from decimal import Decimal
 
@@ -412,62 +420,74 @@ async def call_llm(
     from services.llm.registry import get_llm_client
     from services.llm.tools import STANDARD_TOOLS
 
-    thread = await sync_to_async(
-        Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
-    )(id=thread_id)
+    messages = messages or []
 
-    # Budget pre-check: if limits are set and already exceeded, block the call.
-    budget = SessionBudget.from_session(thread.tsession)
-    if (
-        budget.max_context_tokens > 0
-        and thread.tsession.cumulative_context_tokens >= budget.max_context_tokens
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Context token budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
-    if (
-        budget.max_cost_per_session > 0
-        and thread.tsession.total_cost >= budget.max_cost_per_session
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Cost budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
-    if (
-        budget.max_tokens_per_session > 0
-        and thread.tsession.total_tokens >= budget.max_tokens_per_session
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Token budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
+    thread = None
+    if thread_id:
+        thread = await sync_to_async(
+            Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
+        )(id=thread_id)
 
-    provider_id = llm_provider_id or (
-        str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
-    )
-    client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id), provider_id)
+        # Budget pre-check: if limits are set and already exceeded, block the call.
+        budget = SessionBudget.from_session(thread.tsession)
+        if (
+            budget.max_context_tokens > 0
+            and thread.tsession.cumulative_context_tokens >= budget.max_context_tokens
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Context token budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+        if (
+            budget.max_cost_per_session > 0
+            and thread.tsession.total_cost >= budget.max_cost_per_session
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Cost budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+        if (
+            budget.max_tokens_per_session > 0
+            and thread.tsession.total_tokens >= budget.max_tokens_per_session
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Token budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+
+    if thread is not None:
+        provider_id = llm_provider_id or (
+            str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
+        )
+        client_organization_id = str(thread.tsession.organization_id)
+    else:
+        if organization_id is None:
+            raise ValueError("call_llm requires either thread_id or organization_id")
+        provider_id = llm_provider_id
+        client_organization_id = organization_id
+
+    client = await sync_to_async(get_llm_client)(client_organization_id, provider_id)
     llm_messages = [
         LLMMessage(
             role=m["role"],
@@ -546,14 +566,17 @@ async def call_llm(
         from apps.llm.models import LLMProvider
 
         provider = await sync_to_async(LLMProvider.objects.filter(id=llm_provider_id).first)()
-    if not provider:
+    if not provider and thread is not None:
         provider = thread.tsession.llm_provider
     if not provider:
         from apps.llm.models import LLMProvider
 
+        fallback_organization_id = (
+            str(thread.tsession.organization_id) if thread is not None else organization_id
+        )
         provider = await sync_to_async(
             lambda: (
-                LLMProvider.objects.filter(organization=thread.tsession.organization, enabled=True)
+                LLMProvider.objects.filter(organization_id=fallback_organization_id, enabled=True)
                 .order_by("-is_default")
                 .first()
             )
@@ -564,12 +587,13 @@ async def call_llm(
         ) + Decimal(resp.output_tokens) * provider.cost_per_1m_output_tokens / Decimal("1000000")
 
     # Update TSession counters atomically.
-    await sync_to_async(_update_session_usage)(
-        str(thread.tsession.id),
-        resp.input_tokens,
-        resp.output_tokens,
-        str(cost),
-    )
+    if thread is not None:
+        await sync_to_async(_update_session_usage)(
+            str(thread.tsession.id),
+            resp.input_tokens,
+            resp.output_tokens,
+            str(cost),
+        )
 
     return {
         "content": resp.content or "",
@@ -1006,9 +1030,11 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
         "execution_budget": check.execution_budget or {},
         "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
         "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
-        "investigation_goal": check.evaluation_config.get("goal", "Investigate and report findings")
-        if check.evaluation_config
-        else "Investigate and report findings",
+        "investigation_goal": (
+            check.evaluation_config.get("goal", "Investigate and report findings")
+            if check.evaluation_config
+            else "Investigate and report findings"
+        ),
     }
 
     if version:
@@ -1086,38 +1112,32 @@ async def dispatch_actions(
     findings: list[dict],
     dry_run: bool = False,
 ) -> dict:
-    """Dispatch notifications for Check findings.
-
-    Placeholder — real Action Dispatcher implementation in Task 13.
-    For now, logs actions that would be dispatched.
-    """
+    """Dispatch notifications for Check findings via the ActionDispatcher."""
     _setup_django_models()
-    from apps.checks.models import Check, CheckActionLog
+    from apps.checks.models import Check, CheckExecution
+    from services.checks.actions import ActionDispatcher
 
     check = await sync_to_async(Check.objects.get)(id=check_id)
-    notification_config = check.notification_config or {}
 
-    actions_dispatched = []
+    execution = None
+    if execution_id:
+        try:
+            execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
+        except CheckExecution.DoesNotExist:
+            pass
 
     if dry_run:
         return {"dispatched": [], "dry_run": True}
 
-    # TODO: Replace with real Action Dispatcher in Task 13
-    for channel in notification_config.get("channels", []):
-        action = await sync_to_async(CheckActionLog.objects.create)(
-            check=check,
-            execution_id=execution_id if execution_id else None,
-            action_type=channel.get("type", "webhook"),
-            recipient=channel.get("target", ""),
-            payload={"findings": findings, "check_name": check.name},
-            delivery_status=CheckActionLog.DeliveryStatus.PENDING,
-        )
-        actions_dispatched.append(
-            {
-                "action_id": str(action.id),
-                "channel": channel.get("type"),
-                "target": channel.get("target"),
-            }
-        )
+    logs = await sync_to_async(ActionDispatcher.dispatch)(check, execution, findings)
+
+    actions_dispatched = [
+        {
+            "action_id": str(log.id),
+            "action_type": log.action_type,
+            "status": log.delivery_status,
+        }
+        for log in logs
+    ]
 
     return {"dispatched": actions_dispatched, "dry_run": False}

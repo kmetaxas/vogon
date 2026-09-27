@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
@@ -19,6 +20,8 @@ from apps.checks.serializers import (
     CheckVersionSerializer,
 )
 from services.checks.scheduler import CheckScheduler
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationFilterMixin:
@@ -50,20 +53,25 @@ class CheckViewSet(viewsets.ModelViewSet):
             try:
                 asyncio.run(CheckScheduler.create_schedule(check))
             except Exception:
-                pass  # Temporal may be offline; never fail the request
+                logger.warning(
+                    "Temporal schedule creation failed for check %s", check.id, exc_info=True
+                )
+                # Temporal may be offline; never fail the request
 
     def perform_update(self, serializer):
         check = serializer.save()
         try:
             asyncio.run(CheckScheduler.update_schedule(check))
         except Exception:
-            pass
+            logger.warning("Temporal schedule update failed for check %s", check.id, exc_info=True)
 
     def perform_destroy(self, instance):
         try:
             asyncio.run(CheckScheduler.delete_schedule(str(instance.id)))
         except Exception:
-            pass
+            logger.warning(
+                "Temporal schedule deletion failed for check %s", instance.id, exc_info=True
+            )
         instance.delete()
 
     @action(methods=["post"], detail=True)

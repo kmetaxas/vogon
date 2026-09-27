@@ -5,8 +5,8 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
+from apps.checks.models import Check, CheckExecution, CheckVersion
 from apps.core.mixins import OrganizationRequiredMixin
-from apps.checks.models import Check, CheckExecution, CheckHealthState, CheckVersion
 
 
 class CheckListView(OrganizationRequiredMixin, View):
