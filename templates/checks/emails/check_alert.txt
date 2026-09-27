@@ -1,0 +1,12 @@
+Check Alert: {{ check_name }}
+State: {{ health_state }}
+
+{% if summary %}
+Summary: {{ summary }}
+{% endif %}
+
+{% for finding in findings %}
+- [{{ finding.severity }}] {{ finding.message }}
+{% endfor %}
+
+Execution ID: {{ execution_id }}

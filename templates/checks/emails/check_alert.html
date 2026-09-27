@@ -1,0 +1,11 @@
+<h2>Check Alert: {{ check_name }}</h2>
+<p><strong>State:</strong> {{ health_state }}</p>
+{% if summary %}
+<p><strong>Summary:</strong> {{ summary }}</p>
+{% endif %}
+<ul>
+{% for finding in findings %}
+<li>[{{ finding.severity }}] {{ finding.message }}</li>
+{% endfor %}
+</ul>
+<p>Execution ID: {{ execution_id }}</p>

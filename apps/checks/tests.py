@@ -1,9 +1,11 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
 import importlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from django.test import TestCase
+import httpx
+from django.core import mail
+from django.test import TestCase, override_settings
 
 from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
 from apps.checks.models import (
@@ -559,3 +561,282 @@ class CheckExecutionQueryTests(TestCase):
             check=self.check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
         )
         self.assertFalse(CheckExecution.is_missed(self.check, expected_interval_seconds=3600))
+
+
+class WebhookChannelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="wh_user", password="pass")
+        self.organization = Organization.objects.create(name="WH Org", slug="wh-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    @patch("services.checks.channels.webhook.httpx.Client")
+    def test_webhook_success(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        check = _make_check(self.organization, name="WH Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+        )
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.WEBHOOK,
+            recipient="https://hooks.example.com/alerts",
+        )
+
+        from services.checks.channels.webhook import WebhookChannel
+
+        result = WebhookChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["status_code"], 200)
+
+    @patch("services.checks.channels.webhook.httpx.Client")
+    def test_webhook_retry_then_fail(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        check = _make_check(self.organization, name="WH Check Fail")
+        execution = CheckExecution.objects.create(check=check)
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.WEBHOOK,
+            recipient="https://hooks.example.com/alerts",
+        )
+
+        from services.checks.channels.webhook import WebhookChannel
+
+        result = WebhookChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(mock_client.post.call_count, 3)
+
+    def test_webhook_missing_recipient(self):
+        check = _make_check(self.organization, name="WH No URL")
+        execution = CheckExecution.objects.create(check=check)
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.WEBHOOK,
+            recipient="",
+        )
+
+        from services.checks.channels.webhook import WebhookChannel
+
+        result = WebhookChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("No webhook URL", result["error"])
+
+    @patch("services.checks.channels.webhook.httpx.Client")
+    def test_webhook_handles_connection_error(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("boom")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        check = _make_check(self.organization, name="WH Conn Err")
+        execution = CheckExecution.objects.create(check=check)
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.WEBHOOK,
+            recipient="https://hooks.example.com/alerts",
+        )
+
+        from services.checks.channels.webhook import WebhookChannel
+
+        result = WebhookChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("boom", result["error"])
+
+
+class EmailChannelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="email_user", password="pass")
+        self.organization = Organization.objects.create(name="Email Org", slug="email-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_email_channel_sends(self):
+        check = _make_check(self.organization, name="Email Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+        )
+        execution.evaluation_result = {
+            "findings": [{"severity": "critical", "message": "CPU high"}],
+            "summary": "CPU usage exceeded threshold",
+        }
+        execution.save()
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.EMAIL,
+            recipient="ops@example.com",
+        )
+
+        from services.checks.channels.email import EmailChannel
+
+        result = EmailChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("CRITICAL", mail.outbox[0].subject)
+        self.assertIn("Email Check", mail.outbox[0].subject)
+
+
+class AlertmanagerFormatterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="am_user", password="pass")
+        self.organization = Organization.objects.create(name="AM Org", slug="am-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    def test_format_critical(self):
+        check = _make_check(self.organization, name="Disk Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+        )
+        execution.evaluation_result = {
+            "findings": [{"severity": "critical", "message": "Disk 95% full"}],
+            "summary": "Disk almost full",
+        }
+        execution.save()
+
+        from services.checks.formatters.alertmanager import AlertmanagerFormatter
+
+        result = AlertmanagerFormatter.format(check, execution)
+
+        self.assertEqual(result["status"], "firing")
+        self.assertEqual(len(result["alerts"]), 1)
+        alert = result["alerts"][0]
+        self.assertEqual(alert["labels"]["severity"], "critical")
+        self.assertEqual(alert["labels"]["check_name"], "Disk Check")
+        self.assertIn("Disk almost full", alert["annotations"]["summary"])
+        self.assertIn("Disk 95% full", alert["annotations"]["description"])
+        self.assertEqual(alert["status"], "firing")
+
+    def test_format_healthy(self):
+        check = _make_check(self.organization, name="CPU Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+        )
+
+        from services.checks.formatters.alertmanager import AlertmanagerFormatter
+
+        result = AlertmanagerFormatter.format(check, execution, status="resolved")
+
+        alert = result["alerts"][0]
+        self.assertEqual(alert["labels"]["severity"], "info")
+        self.assertEqual(alert["status"], "resolved")
+
+    def test_format_batch(self):
+        check1 = _make_check(self.organization, name="Check 1")
+        check2 = _make_check(self.organization, name="Check 2")
+        exec1 = CheckExecution.objects.create(
+            check=check1, health_state=CheckExecution.HealthState.CRITICAL
+        )
+        exec2 = CheckExecution.objects.create(
+            check=check2, health_state=CheckExecution.HealthState.DEGRADED
+        )
+
+        from services.checks.formatters.alertmanager import AlertmanagerFormatter
+
+        result = AlertmanagerFormatter.format_batch([(check1, exec1), (check2, exec2)])
+
+        self.assertEqual(len(result["alerts"]), 2)
+        self.assertEqual(result["alerts"][0]["labels"]["severity"], "critical")
+        self.assertEqual(result["alerts"][1]["labels"]["severity"], "warning")
+
+
+class TeamsChannelTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="teams_user", password="pass")
+        self.organization = Organization.objects.create(name="Teams Org", slug="teams-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    @patch("services.checks.channels.teams.httpx.Client")
+    def test_teams_card_success(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        check = _make_check(self.organization, name="Teams Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+        )
+        execution.evaluation_result = {
+            "findings": [{"severity": "critical", "message": "Disk full"}]
+        }
+        execution.save()
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.TEAMS,
+            recipient="https://teams.webhook.example.com",
+        )
+
+        from services.checks.channels.teams import TeamsChannel
+
+        result = TeamsChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "sent")
+
+        call_args = mock_client.post.call_args
+        payload = call_args.kwargs.get("json", call_args[1].get("json"))
+        self.assertEqual(payload["@type"], "MessageCard")
+        self.assertEqual(payload["themeColor"], "FF0000")
+        self.assertIn("Check Alert: Teams Check", payload["summary"])
+
+    def test_teams_no_webhook_url(self):
+        check = _make_check(self.organization, name="Teams No URL")
+        execution = CheckExecution.objects.create(check=check)
+        action_log = CheckActionLog.objects.create(
+            check=check,
+            execution=execution,
+            action_type=CheckActionLog.ActionType.TEAMS,
+            recipient="",
+        )
+
+        from services.checks.channels.teams import TeamsChannel
+
+        result = TeamsChannel.send(check, execution, action_log)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("No Teams webhook URL", result["error"])
