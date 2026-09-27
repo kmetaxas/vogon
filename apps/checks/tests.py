@@ -1,5 +1,6 @@
-# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false
+# pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
+import importlib
 from unittest.mock import AsyncMock, patch
 
 from django.test import TestCase
@@ -25,6 +26,14 @@ def _make_check(organization, name="Check", **kwargs):
     }
     defaults.update(kwargs)
     return Check.objects.create(**defaults)
+
+
+def _action_dispatcher():
+    return importlib.import_module("services.checks.actions").ActionDispatcher
+
+
+def _retry_manager():
+    return importlib.import_module("services.checks.actions").RetryManager
 
 
 class EvaluationEngineTests(TestCase):
@@ -184,6 +193,118 @@ class CheckSchedulerTests(TestCase):
             CheckScheduler._workflow_for_mode("autonomous"),
             AutonomousInvestigationWorkflow,
         )
+
+
+class ActionDispatcherTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="ad_user", password="pass")
+        self.organization = Organization.objects.create(name="AD Org", slug="ad-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.check = _make_check(self.organization, name="AD Check")
+
+    def test_dispatch_on_completion(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+        )
+        actions = [{"type": "email", "target": "ops@example.com", "condition": "on_completion"}]
+        self.check.notification_config = {"actions": actions}
+        self.check.save()
+
+        ActionDispatcher = _action_dispatcher()
+        logs = ActionDispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].action_type, "email")
+        self.assertEqual(logs[0].recipient, "ops@example.com")
+
+    def test_dispatch_on_failure(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.FAILED,
+            health_state=CheckExecution.HealthState.UNKNOWN,
+        )
+        actions = [
+            {
+                "type": "webhook",
+                "target": "https://alert.example.com",
+                "condition": "on_failure",
+            }
+        ]
+        self.check.notification_config = {"actions": actions}
+        self.check.save()
+
+        ActionDispatcher = _action_dispatcher()
+        logs = ActionDispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(len(logs), 1)
+
+    def test_dispatch_suppressed_by_cooldown(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+        )
+        actions = [
+            {
+                "type": "email",
+                "target": "ops@example.com",
+                "condition": "on_completion",
+                "cooldown_seconds": 3600,
+            }
+        ]
+        self.check.notification_config = {"actions": actions}
+        self.check.save()
+
+        ActionDispatcher = _action_dispatcher()
+
+        ActionDispatcher.dispatch(self.check, execution, [])
+        logs = ActionDispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(len(logs), 0)
+
+    def test_dispatch_on_severity_threshold(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+        )
+        findings = [{"severity": "critical", "message": "CPU high"}]
+        actions = [
+            {
+                "type": "webhook",
+                "target": "https://alert.example.com",
+                "condition": "on_severity_threshold",
+                "severity_threshold": "critical",
+            }
+        ]
+        self.check.notification_config = {"actions": actions}
+        self.check.save()
+
+        ActionDispatcher = _action_dispatcher()
+        logs = ActionDispatcher.dispatch(self.check, execution, findings)
+
+        self.assertEqual(len(logs), 1)
+
+    def test_retry_manager(self):
+        RetryManager = _retry_manager()
+        execution = CheckExecution.objects.create(check=self.check)
+        action_log = CheckActionLog.objects.create(
+            check=self.check,
+            execution=execution,
+            action_type="email",
+            delivery_status=CheckActionLog.DeliveryStatus.FAILED,
+            retry_count=0,
+        )
+
+        self.assertTrue(RetryManager.should_retry(action_log))
+        self.assertEqual(RetryManager.backoff_seconds(0), 5)
+        self.assertEqual(RetryManager.backoff_seconds(2), 20)
 
 
 class CheckAPITests(TestCase):
@@ -397,3 +518,44 @@ class CheckScheduleLifecycleTests(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertTrue(Check.objects.filter(name="Offline Check").exists())
+
+
+class CheckExecutionQueryTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="exec_q_user", password="pass")
+        self.organization = Organization.objects.create(name="ExecQ Org", slug="execq-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.check = _make_check(self.organization, name="ExecQ Check")
+
+    def test_last_for_check(self):
+        CheckExecution.objects.create(
+            check=self.check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+        exec2 = CheckExecution.objects.create(
+            check=self.check, execution_status=CheckExecution.ExecutionStatus.FAILED
+        )
+        last = CheckExecution.last_for_check(str(self.check.id))
+        self.assertEqual(last.id, exec2.id)
+
+    def test_last_successful_for_check(self):
+        CheckExecution.objects.create(
+            check=self.check, execution_status=CheckExecution.ExecutionStatus.FAILED
+        )
+        exec_ok = CheckExecution.objects.create(
+            check=self.check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+        last_ok = CheckExecution.last_successful_for_check(str(self.check.id))
+        self.assertEqual(last_ok.id, exec_ok.id)
+
+    def test_is_missed_no_executions(self):
+        self.assertTrue(CheckExecution.is_missed(self.check, expected_interval_seconds=60))
+
+    def test_is_missed_recent_execution(self):
+        CheckExecution.objects.create(
+            check=self.check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+        self.assertFalse(CheckExecution.is_missed(self.check, expected_interval_seconds=3600))

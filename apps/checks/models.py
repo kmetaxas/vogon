@@ -1,4 +1,4 @@
-# pyright: reportAttributeAccessIssue=false
+# pyright: reportAttributeAccessIssue=false, reportOperatorIssue=false
 
 import uuid
 from decimal import Decimal
@@ -182,6 +182,47 @@ class CheckExecution(models.Model):
 
     def __str__(self):
         return f"Execution {self.id} of {self.check.name} ({self.execution_status})"
+
+    @classmethod
+    def last_for_check(cls, check_id: str) -> "CheckExecution | None":
+        """Return the most recent execution for a Check."""
+        try:
+            return cls.objects.filter(check_id=check_id).order_by("-triggered_at").first()
+        except Exception:
+            return None
+
+    @classmethod
+    def last_successful_for_check(cls, check_id: str) -> "CheckExecution | None":
+        """Return the most recent completed execution for a Check."""
+        try:
+            return (
+                cls.objects.filter(
+                    check_id=check_id,
+                    execution_status=cls.ExecutionStatus.COMPLETED,
+                )
+                .order_by("-triggered_at")
+                .first()
+            )
+        except Exception:
+            return None
+
+    @classmethod
+    def is_missed(cls, check, expected_interval_seconds: int = 60) -> bool:
+        """Detect if a Check has missed its expected execution window.
+
+        A check is considered missed if:
+        - It is enabled
+        - Its last execution is older than expected_interval_seconds + 2x buffer
+        """
+        if not check.enabled:
+            return False
+        last = cls.last_for_check(str(check.id))
+        if not last:
+            return True  # Never executed
+        from django.utils import timezone
+
+        elapsed = (timezone.now() - last.triggered_at).total_seconds()
+        return elapsed > (expected_interval_seconds * 3)
 
 
 class CheckHealthState(models.Model):
