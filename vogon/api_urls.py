@@ -1,6 +1,13 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from apps.checks.api_views import (
+    CheckActionLogViewSet,
+    CheckExecutionViewSet,
+    CheckHealthStateViewSet,
+    CheckVersionViewSet,
+    CheckViewSet,
+)
 from apps.core.api_views import OrganizationViewSet
 from apps.infradesigns.api_views import InfrastructureDesignViewSet
 from apps.llm.api_views import LLMProviderViewSet
@@ -39,6 +46,11 @@ router.register(r"resource-types", ResourceTypeViewSet, basename="resourcetype")
 router.register(r"resources", ResourceViewSet, basename="resource")
 router.register(r"marvin-configs", MarvinConfigViewSet, basename="marvinconfig")
 router.register(r"llm-providers", LLMProviderViewSet, basename="llmprovider")
+router.register(r"checks", CheckViewSet, basename="check")
+router.register(r"check-versions", CheckVersionViewSet, basename="checkversion")
+router.register(r"check-executions", CheckExecutionViewSet, basename="checkexecution")
+router.register(r"check-health-states", CheckHealthStateViewSet, basename="checkhealthstate")
+router.register(r"check-action-logs", CheckActionLogViewSet, basename="checkactionlog")
 
 urlpatterns = [
     path("", include(router.urls)),
