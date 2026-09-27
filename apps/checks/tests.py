@@ -139,6 +139,51 @@ class EvaluationEngineTests(TestCase):
         self.assertEqual(eval_result.state, HealthState.CRITICAL)
 
 
+class CheckSchedulerTests(TestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(name="Scheduler Org", slug="scheduler-org")
+
+    def test_build_spec_interval(self):
+        from services.checks.scheduler import CheckScheduler
+
+        check = _make_check(
+            self.organization,
+            schedule_type=Check.ScheduleType.INTERVAL,
+            schedule_expression="300",
+        )
+
+        spec = CheckScheduler._build_spec(check)
+
+        self.assertEqual(spec.intervals[0].every.total_seconds(), 300)
+
+    def test_build_spec_cron(self):
+        from services.checks.scheduler import CheckScheduler
+
+        check = _make_check(
+            self.organization,
+            schedule_type=Check.ScheduleType.CRON,
+            schedule_expression="0 */6 * * *",
+        )
+
+        spec = CheckScheduler._build_spec(check)
+
+        self.assertEqual(spec.cron_expressions[0], "0 */6 * * *")
+
+    def test_workflow_for_mode(self):
+        from services.checks.scheduler import CheckScheduler
+        from services.temporal_workers.workflows import (
+            AutonomousInvestigationWorkflow,
+            CheckWorkflow,
+        )
+
+        self.assertEqual(CheckScheduler._workflow_for_mode("deterministic"), CheckWorkflow)
+        self.assertEqual(CheckScheduler._workflow_for_mode("ai_assisted"), CheckWorkflow)
+        self.assertEqual(
+            CheckScheduler._workflow_for_mode("autonomous"),
+            AutonomousInvestigationWorkflow,
+        )
+
+
 class CheckAPITests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="check_api_user", password="pass")
