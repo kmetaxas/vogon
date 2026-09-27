@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -58,6 +59,14 @@ class TSession(models.Model):
         blank=True,
         related_name="tsessions",
         help_text="Optional LLM provider override for this session. Falls back to org default.",
+    )
+    total_input_tokens = models.PositiveIntegerField(default=0)
+    total_output_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    total_cost = models.DecimalField(max_digits=14, decimal_places=6, default=Decimal("0.00"))
+    cumulative_context_tokens = models.PositiveIntegerField(
+        default=0,
+        help_text="Cumulative sum of all tokens consumed in the session.",
     )
 
     class Meta:
@@ -328,6 +337,10 @@ class Message(models.Model):
         blank=True,
         help_text="Extra LLM-specific data: tool_call_id, tool_calls array, name, etc.",
     )
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    cost = models.DecimalField(max_digits=12, decimal_places=6, default=Decimal("0.00"))
+    model_name = models.CharField(max_length=100, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

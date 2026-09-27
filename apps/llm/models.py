@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.db import models
 
@@ -42,6 +43,12 @@ class LLMProvider(models.Model):
         default=dict,
         blank=True,
         help_text="temperature, max_tokens, top_p",
+    )
+    cost_per_1m_input_tokens = models.DecimalField(
+        max_digits=12, decimal_places=6, default=Decimal("0.00")
+    )
+    cost_per_1m_output_tokens = models.DecimalField(
+        max_digits=12, decimal_places=6, default=Decimal("0.00")
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

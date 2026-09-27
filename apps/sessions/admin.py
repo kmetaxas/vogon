@@ -13,7 +13,18 @@ from apps.sessions.models import (
 
 @admin.register(TSession)
 class TSessionAdmin(admin.ModelAdmin):
-    list_display = ["title", "organization", "status", "created_by", "created_at"]
+    list_display = [
+        "title",
+        "organization",
+        "status",
+        "created_by",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_tokens",
+        "total_cost",
+        "cumulative_context_tokens",
+        "created_at",
+    ]
     list_filter = ["status", "organization"]
     search_fields = ["title"]
 
@@ -32,7 +43,16 @@ class ToolCallAdmin(admin.ModelAdmin):
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ["thread", "role", "tool_call", "created_by", "created_at"]
+    list_display = [
+        "thread",
+        "role",
+        "tool_call",
+        "created_by",
+        "input_tokens",
+        "output_tokens",
+        "cost",
+        "created_at",
+    ]
     list_filter = ["role", "created_at"]
     search_fields = ["content"]
 

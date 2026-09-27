@@ -1,4 +1,4 @@
-{% load markdown_tags %}
+{% load markdown_tags money_tags %}
 {% if signal_error %}
 <div class="agent-event agent-event-error" style="margin-bottom: var(--spacing-sm);">
     <span class="error">&#9888; {{ signal_error }}</span>
@@ -101,6 +101,15 @@
         {{ item.role|title }}
     </div>
     <div>{{ item.content|markdownify }}</div>
+    {% if item.role == 'assistant' and item.input_tokens %}
+    <div class="message-usage-hint">
+      <span title="Input / Output tokens">{{ item.input_tokens }} / {{ item.output_tokens }} tokens</span>
+      <span class="message-usage-cost">{{ item.cost|money }}</span>
+      {% if item.model_name %}
+      <span class="message-model-name">{{ item.model_name }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
 
     {% if item.references %}
     <div class="message-references">

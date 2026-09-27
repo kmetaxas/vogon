@@ -1,3 +1,4 @@
+{% load money_tags %}
 <div class="thread-pane" data-thread-id="{{ thread.id }}">
   <header class="thread-pane-header">
     <div class="thread-pane-meta">
@@ -29,6 +30,8 @@
     {% endif %}
   </header>
 
+  {% include 'sessions/_usage_bar.html' %}
+
   <div class="thread-messages" id="thread-messages-{{ thread.id }}"
        data-thread-messages="true">
        {% include 'sessions/_chat_messages.html' %}
@@ -50,7 +53,7 @@
     <div class="composer-toolbar" style="display: flex; align-items: center; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
       <div class="model-selector" style="display: flex; align-items: center; gap: var(--spacing-xs);">
         <label for="llm-provider-select-paused" style="font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap;">Model:</label>
-        <select id="llm-provider-select-paused" name="llm_provider" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
+        <select id="llm-provider-select-paused" name="llm_provider" form="chat-form" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
           <option value="" {% if not session.llm_provider %}selected{% endif %}>Default</option>
           {% for provider in llm_providers %}
           <option value="{{ provider.id }}" {% if session.llm_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
@@ -78,7 +81,7 @@
               title="Reference an infrastructure design">&#128208; Design</button>
       <div class="model-selector" style="display: flex; align-items: center; gap: var(--spacing-xs);">
         <label for="llm-provider-select" style="font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap;">Model:</label>
-        <select id="llm-provider-select" name="llm_provider" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
+        <select id="llm-provider-select" name="llm_provider" form="chat-form" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">
           <option value="" {% if not session.llm_provider %}selected{% endif %}>Default</option>
           {% for provider in llm_providers %}
           <option value="{{ provider.id }}" {% if session.llm_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>

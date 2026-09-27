@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, Mock, patch
 
 from django.test import TestCase
@@ -481,7 +482,10 @@ class TroubleshootWorkflowTests(TestCase):
             for call in execute_activity.await_args_list
             if call.args[0] == "create_assistant_message"
         ]
-        self.assertEqual(create_calls[0].kwargs["args"], ["thread-1", "Disk usage is at 95%."])
+        self.assertEqual(
+            create_calls[0].kwargs["args"],
+            ["thread-1", "Disk usage is at 95%.", 0, 0, "0.00", ""],
+        )
 
     def test_run_routes_signaled_message_to_its_thread(self):
         workflow_instance = TroubleshootWorkflow()
@@ -537,7 +541,7 @@ class TroubleshootWorkflowTests(TestCase):
         )
         self.assertEqual(
             execute_activity.await_args_list[create_idx].kwargs["args"],
-            ["thread-2", "slashdot.org is reachable."],
+            ["thread-2", "slashdot.org is reachable.", 0, 0, "0.00", ""],
         )
 
 
@@ -1864,6 +1868,91 @@ class ThreadViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_thread_detail_partial_includes_usage_bar(self):
+        LLMProvider.objects.create(
+            organization=self.organization,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="test-model",
+            enabled=True,
+        )
+        response = self.client.get(
+            reverse(
+                "sessions:thread-detail-partial",
+                kwargs={"session_id": self.session.id, "thread_id": self.thread.id},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "session-usage-info")
+
+    def test_thread_messages_context_includes_resolved_provider(self):
+        from apps.sessions.views import _thread_messages_context
+
+        context = _thread_messages_context(self.session, self.thread)
+        self.assertIn("resolved_provider", context)
+
+    def test_thread_messages_context_includes_is_mixed_models(self):
+        from apps.sessions.views import _thread_messages_context
+
+        Message.objects.create(
+            thread=self.thread,
+            role=Message.Role.ASSISTANT,
+            content="msg1",
+            model_name="model-a",
+        )
+        context = _thread_messages_context(self.session, self.thread)
+        self.assertIn("is_mixed_models", context)
+        self.assertFalse(context["is_mixed_models"])
+        self.assertEqual(context["model_names"], {"model-a"})
+
+    def test_mixed_models_indicator(self):
+        other_thread = Thread.objects.create(tsession=self.session, user=self.other)
+        Message.objects.create(
+            thread=self.thread,
+            role=Message.Role.ASSISTANT,
+            content="msg1",
+            model_name="model-a",
+        )
+        Message.objects.create(
+            thread=other_thread,
+            role=Message.Role.ASSISTANT,
+            content="msg2",
+            model_name="model-b",
+        )
+        response = self.client.get(
+            reverse(
+                "sessions:thread-detail-partial",
+                kwargs={"session_id": self.session.id, "thread_id": self.thread.id},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Mixed models")
+        self.assertContains(response, "Mixed pricing")
+
+    def test_single_model_shows_name(self):
+        LLMProvider.objects.create(
+            organization=self.organization,
+            name="Ollama",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="test-model",
+            enabled=True,
+        )
+        Message.objects.create(
+            thread=self.thread,
+            role=Message.Role.ASSISTANT,
+            content="msg1",
+            model_name="test-model",
+        )
+        response = self.client.get(
+            reverse(
+                "sessions:thread-detail-partial",
+                kwargs={"session_id": self.session.id, "thread_id": self.thread.id},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ollama")
+        self.assertNotContains(response, "Mixed models")
+
     def test_follow_thread_creates_membership(self):
         public_thread = Thread.objects.create(
             tsession=self.session, user=self.other, visibility=Thread.Visibility.PUBLIC
@@ -2531,7 +2620,32 @@ class TroubleshootWorkflowReasonAwareTests(TestCase):
             c[2]["args"] for c in calls if c[0] == "create_assistant_message"
         ]
         self.assertEqual(len(assistant_message_calls), 1)
-        self.assertEqual(assistant_message_calls[0], ["thread-1", "Second turn complete"])
+        self.assertEqual(
+            assistant_message_calls[0], ["thread-1", "Second turn complete", 0, 0, "0.00", ""]
+        )
+
+    def test_workflow_passes_model_name_to_assistant_message(self):
+        calls = []
+        execute_activity = self._make_execute_activity(
+            calls=calls,
+            call_llm={
+                "content": "Done",
+                "tool_calls": [],
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "cost": "0.0002",
+                "model": "gpt-oss:20b",
+            },
+        )
+
+        self._run_workflow(execute_activity)
+
+        create_calls = [c for c in calls if c[0] == "create_assistant_message"]
+        self.assertEqual(len(create_calls), 1)
+        self.assertEqual(
+            create_calls[0][2]["args"],
+            ["thread-1", "Done", 7, 3, "0.0002", "gpt-oss:20b"],
+        )
 
     def test_workflow_creates_continue_prompt_on_iteration_limit(self):
         calls = []
@@ -2985,3 +3099,358 @@ class BuildAssistantProgressTests(TestCase):
         assert result is not None
         self.assertEqual(result["tool_calls_count"], 1)
         self.assertEqual(result["tool_calls"][0]["name"], "fallback_tool")
+
+
+class LLMBudgetActivityTests(TransactionTestCase):
+    def _create_thread(self, username="llm_budget"):
+        user = User.objects.create_user(username=username, password="pass")
+        organization = Organization.objects.create(name=username, slug=username)
+        session = TSession.objects.create(
+            organization=organization,
+            title="Budget Session",
+            created_by=user,
+        )
+        return Thread.objects.create(tsession=session, user=user), session
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_blocks_when_context_budget_exceeded(self, mock_get_client):
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        thread, session = self._create_thread("context_budget")
+        session.execution_budget = {"max_context_tokens": 10}
+        session.cumulative_context_tokens = 10
+        session.save()
+
+        result = asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        self.assertEqual(result["reason"], "budget_exceeded")
+        self.assertIn("Context token budget exceeded", result["error"])
+        self.assertFalse(mock_client.chat.called)
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_blocks_when_cost_budget_exceeded(self, mock_get_client):
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        thread, session = self._create_thread("cost_budget")
+        session.execution_budget = {"max_cost_per_session": "0.01"}
+        session.total_cost = Decimal("0.01")
+        session.save()
+
+        result = asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        self.assertEqual(result["reason"], "budget_exceeded")
+        self.assertIn("Cost budget exceeded", result["error"])
+        self.assertFalse(mock_client.chat.called)
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_blocks_when_token_budget_exceeded(self, mock_get_client):
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        thread, session = self._create_thread("token_budget")
+        session.execution_budget = {"max_tokens_per_session": 100}
+        session.total_tokens = 100
+        session.save()
+
+        result = asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        self.assertEqual(result["reason"], "budget_exceeded")
+        self.assertIn("Token budget exceeded", result["error"])
+        self.assertFalse(mock_client.chat.called)
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_with_zero_budget_limits_allows_call(self, mock_get_client):
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(
+            return_value=LLMResponse(content="ok", tool_calls=[], input_tokens=5, output_tokens=3)
+        )
+        mock_get_client.return_value = mock_client
+
+        thread, session = self._create_thread("unlimited")
+        result = asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        self.assertEqual(result["content"], "ok")
+        self.assertEqual(result["input_tokens"], 5)
+        self.assertEqual(result["output_tokens"], 3)
+        self.assertTrue(mock_client.chat.called)
+
+        session.refresh_from_db()
+        self.assertEqual(session.total_input_tokens, 5)
+        self.assertEqual(session.total_output_tokens, 3)
+        self.assertEqual(session.total_tokens, 8)
+        self.assertEqual(session.cumulative_context_tokens, 8)
+
+    def test_create_assistant_message_persists_token_and_cost_fields(self):
+        user = User.objects.create_user(username="token_msg", password="pass")
+        organization = Organization.objects.create(name="TokenMsg", slug="tokenmsg")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Token Message",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        result = asyncio.run(
+            create_assistant_message(
+                str(thread.id),
+                "Hello",
+                input_tokens=10,
+                output_tokens=5,
+                cost=Decimal("0.0001"),
+            )
+        )
+
+        message = Message.objects.get(id=result["message_id"])
+        self.assertEqual(message.input_tokens, 10)
+        self.assertEqual(message.output_tokens, 5)
+        self.assertEqual(message.cost, Decimal("0.0001"))
+
+    def test_create_assistant_message_persists_model_name(self):
+        user = User.objects.create_user(username="model_msg", password="pass")
+        organization = Organization.objects.create(name="ModelMsg", slug="modelmsg")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Model Message",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        result = asyncio.run(
+            create_assistant_message(
+                str(thread.id),
+                "Hello",
+                input_tokens=10,
+                output_tokens=5,
+                cost=Decimal("0.0001"),
+                model_name="gpt-oss:20b",
+            )
+        )
+
+        message = Message.objects.get(id=result["message_id"])
+        self.assertEqual(message.model_name, "gpt-oss:20b")
+
+    def test_create_assistant_message_defaults_model_name_blank(self):
+        user = User.objects.create_user(username="model_blank", password="pass")
+        organization = Organization.objects.create(name="ModelBlank", slug="modelblank")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Model Blank",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        result = asyncio.run(create_assistant_message(str(thread.id), "Hello"))
+
+        message = Message.objects.get(id=result["message_id"])
+        self.assertEqual(message.model_name, "")
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_computes_cost_with_provider_pricing(self, mock_get_client):
+        from decimal import Decimal
+
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(
+            return_value=LLMResponse(
+                content="ok", tool_calls=[], input_tokens=1000, output_tokens=500
+            )
+        )
+        mock_get_client.return_value = mock_client
+
+        user = User.objects.create_user(username="pricing", password="pass")
+        organization = Organization.objects.create(name="Pricing", slug="pricing")
+        provider = LLMProvider.objects.create(
+            organization=organization,
+            name="Priced",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="priced-model",
+            cost_per_1m_input_tokens=Decimal("0.50"),
+            cost_per_1m_output_tokens=Decimal("1.50"),
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Cost Session",
+            created_by=user,
+            llm_provider=provider,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        result = asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
+
+        expected_cost = Decimal("1000") * Decimal("0.50") / Decimal("1000000") + Decimal(
+            "500"
+        ) * Decimal("1.50") / Decimal("1000000")
+        self.assertEqual(Decimal(result["cost"]), expected_cost)
+        session.refresh_from_db()
+        self.assertEqual(session.total_cost, expected_cost)
+
+
+class TroubleshootWorkflowBudgetTests(TestCase):
+    def _make_execute_activity(self, *, call_llm=None):
+        async def execute_activity(name, *args, **kwargs):
+            activity_args = kwargs.get("args", [])
+            if name == "initialize_session":
+                return {"session_id": "s", "thread_id": "t", "status": "initialized"}
+            if name == "set_session_status":
+                return {"session_id": activity_args[0], "status": activity_args[1]}
+            if name == "build_llm_context":
+                return {"messages": [{"role": "user", "content": "hi"}]}
+            if name == "call_llm":
+                return call_llm or {"content": "Done", "tool_calls": []}
+            if name == "record_agent_event":
+                return {"kind": activity_args[1]}
+            if name == "create_assistant_message":
+                return {"message_id": "msg-1", "thread_id": "t"}
+            if name == "check_completion":
+                return True
+            return {}
+
+        return execute_activity
+
+    def _run_workflow(self, execute_activity=None, message=None):
+        workflow_instance = TroubleshootWorkflow()
+        if message is None:
+            message = {"content": "hi", "role": "user", "thread_id": "t"}
+
+        if execute_activity is None:
+            execute_activity = self._make_execute_activity()
+
+        sent_message = False
+
+        async def fake_wait_condition(predicate):
+            nonlocal sent_message
+            if not predicate():
+                if not sent_message:
+                    sent_message = True
+                    await workflow_instance.user_message(message)
+                else:
+                    await workflow_instance.complete()
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch(
+                "services.temporal_workers.workflows.workflow.wait_condition",
+                AsyncMock(side_effect=fake_wait_condition),
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            return asyncio.run(workflow_instance.run("s", "t"))
+
+    def test_workflow_tracks_cumulative_tokens_and_cost(self):
+        execute_activity = self._make_execute_activity(
+            call_llm={
+                "content": "Done",
+                "tool_calls": [],
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost": "0.50",
+            }
+        )
+        state = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["cumulative_tokens"], 15)
+        self.assertEqual(state["cumulative_cost"], "0.50")
+        self.assertEqual(state["cumulative_context_tokens"], 15)
+
+    def test_workflow_budget_exceeded_reason(self):
+        execute_activity = self._make_execute_activity(
+            call_llm={
+                "reason": "budget_exceeded",
+                "error": "Context token budget exceeded.",
+                "content": "",
+                "tool_calls": [],
+            }
+        )
+        state = self._run_workflow(execute_activity)
+
+        self.assertEqual(state["last_failure_reason"], "budget_exceeded")
+        self.assertEqual(state["last_failure_detail"], "Context token budget exceeded.")
+
+
+class MessageModelNameBackfillTests(TestCase):
+    def test_backfill_sets_model_name_from_session_provider(self):
+        import importlib
+
+        from django.apps import apps as global_apps
+
+        backfill = importlib.import_module(
+            "apps.sessions.migrations.0013_message_model_name"
+        ).backfill_model_name
+
+        user = User.objects.create_user(username="backfill", password="pass")
+        organization = Organization.objects.create(name="Backfill", slug="backfill")
+        provider = LLMProvider.objects.create(
+            organization=organization,
+            name="Backfill Provider",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="backfill-model",
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Backfill Session",
+            created_by=user,
+            llm_provider=provider,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+        with_tokens = Message.objects.create(
+            thread=thread,
+            role=Message.Role.ASSISTANT,
+            content="has tokens",
+            input_tokens=10,
+            output_tokens=5,
+        )
+        without_tokens = Message.objects.create(
+            thread=thread,
+            role=Message.Role.ASSISTANT,
+            content="no tokens",
+        )
+
+        backfill(global_apps, None)
+
+        with_tokens.refresh_from_db()
+        without_tokens.refresh_from_db()
+        self.assertEqual(with_tokens.model_name, "backfill-model")
+        self.assertEqual(without_tokens.model_name, "")
+
+    def test_backfill_falls_back_to_org_default_provider(self):
+        import importlib
+
+        from django.apps import apps as global_apps
+
+        backfill = importlib.import_module(
+            "apps.sessions.migrations.0013_message_model_name"
+        ).backfill_model_name
+
+        user = User.objects.create_user(username="backfill_default", password="pass")
+        organization = Organization.objects.create(name="BackfillDefault", slug="backfilldefault")
+        LLMProvider.objects.create(
+            organization=organization,
+            name="Default Provider",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="default-model",
+            is_default=True,
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Backfill Default Session",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+        message = Message.objects.create(
+            thread=thread,
+            role=Message.Role.ASSISTANT,
+            content="has tokens",
+            input_tokens=1,
+        )
+
+        backfill(global_apps, None)
+
+        message.refresh_from_db()
+        self.assertEqual(message.model_name, "default-model")

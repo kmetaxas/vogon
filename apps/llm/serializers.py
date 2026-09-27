@@ -48,6 +48,8 @@ class LLMProviderSerializer(serializers.ModelSerializer):
             "is_default",
             "enabled",
             "config",
+            "cost_per_1m_input_tokens",
+            "cost_per_1m_output_tokens",
             "created_at",
             "updated_at",
         ]

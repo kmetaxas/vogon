@@ -1,7 +1,11 @@
-"""SessionBudget Pydantic model for per-session execution budget tracking."""
+"""SessionBudget Pydantic model for per-session execution budget tracking.
+
+Tracks tool execution and target usage against a session's configured limits.
+"""
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from django.db.models.expressions import F  # noqa: F401
@@ -31,6 +35,12 @@ class SessionBudget(BaseModel):
     executions_used: int = Field(default=0, ge=0)
     targets_used: int = Field(default=0, ge=0)
     concurrent_running: int = Field(default=0, ge=0)
+    max_tokens_per_session: int = Field(default=0, ge=0)
+    max_cost_per_session: Decimal = Field(default=Decimal("0.00"))
+    max_context_tokens: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost_used: Decimal = Field(default=Decimal("0.00"))
+    context_tokens_used: int = Field(default=0, ge=0)
 
     @classmethod
     def from_session(cls, session: Any) -> SessionBudget:
@@ -42,9 +52,14 @@ class SessionBudget(BaseModel):
         budget: dict[str, Any] = session.execution_budget or {}
         return cls(**budget)
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, Any]:
         """Return a plain dict suitable for saving to the JSONField."""
-        return self.model_dump()
+        raw = self.model_dump()
+        if "max_cost_per_session" in raw:
+            raw["max_cost_per_session"] = str(raw["max_cost_per_session"])
+        if "cost_used" in raw:
+            raw["cost_used"] = str(raw["cost_used"])
+        return raw
 
 
 class BudgetExceeded(Exception):  # noqa: N818
