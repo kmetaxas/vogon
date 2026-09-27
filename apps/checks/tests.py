@@ -1,5 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false
 
+from unittest.mock import AsyncMock, patch
+
 from django.test import TestCase
 
 from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
@@ -229,13 +231,14 @@ class CheckAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["results"]), 0)
 
-    def test_check_dry_run_action(self):
+    @patch("apps.checks.api_views.CheckScheduler.trigger_now", new_callable=AsyncMock)
+    def test_check_dry_run_action(self, mock_trigger):
         check = _make_check(self.organization, name="Dry Run Check")
+        mock_trigger.return_value = {"workflow_id": "dry", "status": "triggered"}
         response = self.client.post(f"/api/checks/{check.id}/dry_run/")
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["status"], "dry_run_triggered")
-        self.assertEqual(data["check_id"], str(check.id))
+        self.assertEqual(response.json()["status"], "triggered")
+        mock_trigger.assert_called_once_with(check, dry_run=True)
 
     def test_check_version_list_filtered_by_org(self):
         check = _make_check(self.organization, name="Versioned")
@@ -301,3 +304,96 @@ class CheckAPITests(TestCase):
         self.client.logout()
         response = self.client.get("/api/checks/")
         self.assertIn(response.status_code, (401, 403))
+
+
+class CheckScheduleLifecycleTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="sched_user", password="pass")
+        self.organization = Organization.objects.create(name="Sched Org", slug="sched-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
+    def test_check_create_creates_schedule(self, mock_create):
+        mock_create.return_value = {"schedule_id": "check-test", "status": "created"}
+        response = self.client.post(
+            "/api/checks/",
+            {
+                "organization": str(self.organization.id),
+                "name": "Scheduled Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "120",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "enabled": True,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        mock_create.assert_called_once()
+
+    @patch("apps.checks.api_views.CheckScheduler.pause_schedule", new_callable=AsyncMock)
+    def test_disable_action(self, mock_pause):
+        check = _make_check(self.organization, name="Disable Me", enabled=True)
+        mock_pause.return_value = {"schedule_id": f"check-{check.id}", "status": "paused"}
+        response = self.client.post(f"/api/checks/{check.id}/disable/")
+        self.assertEqual(response.status_code, 200)
+        mock_pause.assert_called_once_with(str(check.id))
+        check.refresh_from_db()
+        self.assertFalse(check.enabled)
+
+    @patch("apps.checks.api_views.CheckScheduler.resume_schedule", new_callable=AsyncMock)
+    def test_enable_action(self, mock_resume):
+        check = _make_check(self.organization, name="Enable Me", enabled=False)
+        mock_resume.return_value = {"schedule_id": f"check-{check.id}", "status": "resumed"}
+        response = self.client.post(f"/api/checks/{check.id}/enable/")
+        self.assertEqual(response.status_code, 200)
+        mock_resume.assert_called_once_with(str(check.id))
+        check.refresh_from_db()
+        self.assertTrue(check.enabled)
+
+    @patch("apps.checks.api_views.CheckScheduler.trigger_now", new_callable=AsyncMock)
+    def test_trigger_action(self, mock_trigger):
+        check = _make_check(self.organization, name="Trigger Me")
+        mock_trigger.return_value = {"workflow_id": "test", "status": "triggered"}
+        response = self.client.post(f"/api/checks/{check.id}/trigger/")
+        self.assertEqual(response.status_code, 200)
+        mock_trigger.assert_called_once_with(check)
+
+    @patch("apps.checks.api_views.CheckScheduler.delete_schedule", new_callable=AsyncMock)
+    def test_delete_deletes_schedule(self, mock_delete):
+        check = _make_check(self.organization, name="Delete Me")
+        mock_delete.return_value = {"status": "deleted"}
+        response = self.client.delete(f"/api/checks/{check.id}/")
+        self.assertEqual(response.status_code, 204)
+        mock_delete.assert_called_once_with(str(check.id))
+        self.assertFalse(Check.objects.filter(id=check.id).exists())
+
+    @patch("apps.checks.api_views.CheckScheduler.trigger_now", new_callable=AsyncMock)
+    def test_trigger_requires_authentication(self, mock_trigger):
+        check = _make_check(self.organization, name="Auth Trigger")
+        self.client.logout()
+        response = self.client.post(f"/api/checks/{check.id}/trigger/")
+        self.assertIn(response.status_code, (401, 403))
+        mock_trigger.assert_not_called()
+
+    @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
+    def test_create_survives_temporal_offline(self, mock_create):
+        mock_create.side_effect = RuntimeError("temporal offline")
+        response = self.client.post(
+            "/api/checks/",
+            {
+                "organization": str(self.organization.id),
+                "name": "Offline Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "120",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "enabled": True,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(Check.objects.filter(name="Offline Check").exists())
