@@ -215,6 +215,10 @@ ALERTMANAGER_ENABLED = os.environ.get("ALERTMANAGER_ENABLED", "False").lower() i
 ALERTMANAGER_URL = os.environ.get("ALERTMANAGER_URL", "")
 TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
 
+# The Check models use a `check` FK, which shadows Django's Model.check()
+# classmethod. This is intentional; silence the resulting E020 system check.
+SILENCED_SYSTEM_CHECKS = ["models.E020"]
+
 # Embeddings
 EMBEDDING_PROVIDER_TYPE = os.environ.get("EMBEDDING_PROVIDER_TYPE", "openai")
 EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
