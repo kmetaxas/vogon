@@ -5,5 +5,13 @@ from apps.llm.models import LLMProvider
 
 @admin.register(LLMProvider)
 class LLMProviderAdmin(admin.ModelAdmin):
-    list_display = ["name", "provider_type", "model", "is_default", "enabled"]
+    list_display = [
+        "name",
+        "provider_type",
+        "model",
+        "is_default",
+        "enabled",
+        "cost_per_1m_input_tokens",
+        "cost_per_1m_output_tokens",
+    ]
     list_filter = ["provider_type", "enabled"]

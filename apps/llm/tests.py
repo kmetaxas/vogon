@@ -207,3 +207,23 @@ class LLMProviderEncryptionTests(TestCase):
 
         provider.refresh_from_db()
         self.assertEqual(provider.api_key, "old-plaintext-key")
+
+
+class LLMResponseTests(TestCase):
+    def test_llm_response_default_token_fields(self):
+        from services.llm.base import LLMResponse
+
+        resp = LLMResponse(content="hi", tool_calls=[])
+        self.assertEqual(resp.input_tokens, 0)
+        self.assertEqual(resp.output_tokens, 0)
+        self.assertIsNone(resp.model)
+
+    def test_llm_response_populated_token_fields(self):
+        from services.llm.base import LLMResponse
+
+        resp = LLMResponse(
+            content="hi", tool_calls=[], input_tokens=10, output_tokens=5, model="gpt-4o"
+        )
+        self.assertEqual(resp.input_tokens, 10)
+        self.assertEqual(resp.output_tokens, 5)
+        self.assertEqual(resp.model, "gpt-4o")

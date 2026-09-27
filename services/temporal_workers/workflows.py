@@ -33,6 +33,9 @@ class TroubleshootWorkflow:
             "interrupted": False,
             "last_failure_reason": None,
             "last_failure_detail": None,
+            "cumulative_tokens": 0,
+            "cumulative_cost": "0.00",
+            "cumulative_context_tokens": 0,
         }
         self._pending_messages: list[dict] = []
         self._completion_requested = False
@@ -117,6 +120,8 @@ class TroubleshootWorkflow:
 
                 assistant_response = ""
                 assistant_message_created = False
+                resp: dict = {}
+                reason: str | None = None
                 for iteration in range(max_iterations):
                     self.state["iteration_count"] = iteration
                     # Check if user sent a new message while we were working
@@ -162,6 +167,52 @@ class TroubleshootWorkflow:
                         )
 
                     reason = resp.get("reason")
+
+                    if reason is None:
+                        from decimal import Decimal
+
+                        self.state["cumulative_tokens"] += resp.get("input_tokens", 0) + resp.get(
+                            "output_tokens", 0
+                        )
+                        self.state["cumulative_cost"] = str(
+                            Decimal(self.state["cumulative_cost"])
+                            + Decimal(resp.get("cost", "0.00"))
+                        )
+                        self.state["cumulative_context_tokens"] += resp.get(
+                            "input_tokens", 0
+                        ) + resp.get("output_tokens", 0)
+
+                    if reason == "budget_exceeded":
+                        self.state["last_failure_reason"] = "budget_exceeded"
+                        self.state["last_failure_detail"] = resp.get("error")
+                        await workflow.execute_activity(
+                            "create_assistant_message",
+                            args=[
+                                msg_thread_id,
+                                (
+                                    "The assistant cannot continue because the session budget has "
+                                    f"been exceeded: {resp.get('error', 'Unknown budget limit')}"
+                                ),
+                                0,
+                                0,
+                                "0.00",
+                            ],
+                            start_to_close_timeout=timedelta(seconds=30),
+                            retry_policy=RetryPolicy(
+                                initial_interval=timedelta(seconds=1),
+                                maximum_interval=timedelta(seconds=5),
+                                maximum_attempts=3,
+                            ),
+                        )
+                        assistant_message_created = True
+                        self.state["status"] = "paused_waiting_for_continue"
+                        await workflow.execute_activity(
+                            "set_session_status",
+                            args=[session_id, "paused"],
+                            start_to_close_timeout=timedelta(seconds=10),
+                        )
+                        break
+
                     if reason == "timeout":
                         self.state["last_failure_reason"] = "timeout"
                         self.state["last_failure_detail"] = resp.get("error")
@@ -425,9 +476,17 @@ class TroubleshootWorkflow:
                     )
 
                 if not self.state["interrupted"] and not assistant_message_created:
+                    assistant_args = [msg_thread_id, assistant_response]
+                    if reason is None:
+                        assistant_args += [
+                            resp.get("input_tokens", 0),
+                            resp.get("output_tokens", 0),
+                            resp.get("cost", "0.00"),
+                            resp.get("model", ""),
+                        ]
                     await workflow.execute_activity(
                         "create_assistant_message",
-                        args=[msg_thread_id, assistant_response],
+                        args=assistant_args,
                         start_to_close_timeout=timedelta(seconds=30),
                         retry_policy=RetryPolicy(
                             initial_interval=timedelta(seconds=1),

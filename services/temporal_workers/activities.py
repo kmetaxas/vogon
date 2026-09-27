@@ -191,13 +191,31 @@ def _gather_thread_context(thread_id: str) -> dict:
 
 
 @activity.defn
-async def create_assistant_message(thread_id: str, content: str) -> dict:
+async def create_assistant_message(
+    thread_id: str,
+    content: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cost: str = "0.00",
+    model_name: str = "",
+) -> dict:
     """Create an assistant message in the Django database."""
-    return await sync_to_async(_create_assistant_message)(thread_id, content)
+    return await sync_to_async(_create_assistant_message)(
+        thread_id, content, input_tokens, output_tokens, cost, model_name
+    )
 
 
-def _create_assistant_message(thread_id: str, content: str) -> dict:
+def _create_assistant_message(
+    thread_id: str,
+    content: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost: str,
+    model_name: str = "",
+) -> dict:
     _setup_django_models()
+
+    from decimal import Decimal
 
     from apps.sessions.models import Message, Thread
 
@@ -209,6 +227,10 @@ def _create_assistant_message(thread_id: str, content: str) -> dict:
         thread=thread,
         role=Message.Role.ASSISTANT,
         content=content,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=Decimal(cost),
+        model_name=model_name,
     )
 
     return {"message_id": str(message.id), "thread_id": thread_id}
@@ -372,17 +394,69 @@ def _build_llm_context(thread_id: str, user_message: dict) -> dict:
 @activity.defn
 async def call_llm(thread_id: str, messages: list[dict]) -> dict:
     """Call the LLM and return the response."""
+    from decimal import Decimal
+
     from httpx import TimeoutException
     from openai import APIError, APITimeoutError
 
+    from apps.sessions.budget import SessionBudget
     from apps.sessions.models import Thread
     from services.llm.base import LLMMessage, ToolCall
     from services.llm.registry import get_llm_client
     from services.llm.tools import STANDARD_TOOLS
 
-    thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
-        id=thread_id
-    )
+    thread = await sync_to_async(
+        Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
+    )(id=thread_id)
+
+    # Budget pre-check: if limits are set and already exceeded, block the call.
+    budget = SessionBudget.from_session(thread.tsession)
+    if (
+        budget.max_context_tokens > 0
+        and thread.tsession.cumulative_context_tokens >= budget.max_context_tokens
+    ):
+        return {
+            "content": "",
+            "tool_calls": [],
+            "error": "Context token budget exceeded.",
+            "reason": "budget_exceeded",
+            "reasoning": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": "0.00",
+            "model": "",
+        }
+    if (
+        budget.max_cost_per_session > 0
+        and thread.tsession.total_cost >= budget.max_cost_per_session
+    ):
+        return {
+            "content": "",
+            "tool_calls": [],
+            "error": "Cost budget exceeded.",
+            "reason": "budget_exceeded",
+            "reasoning": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": "0.00",
+            "model": "",
+        }
+    if (
+        budget.max_tokens_per_session > 0
+        and thread.tsession.total_tokens >= budget.max_tokens_per_session
+    ):
+        return {
+            "content": "",
+            "tool_calls": [],
+            "error": "Token budget exceeded.",
+            "reason": "budget_exceeded",
+            "reasoning": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": "0.00",
+            "model": "",
+        }
+
     provider_id = str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
     client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id), provider_id)
     llm_messages = [
@@ -412,6 +486,10 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
             "error": f"The LLM API timed out while generating a response: {exc}",
             "reason": "timeout",
             "reasoning": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": "0.00",
+            "model": "",
         }
     except APIError as exc:
         status = getattr(exc, "status_code", None)
@@ -422,6 +500,10 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
                 "error": f"The LLM API returned a server error ({status}): {exc}",
                 "reason": "transient_error",
                 "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
             }
         else:
             return {
@@ -430,6 +512,10 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
                 "error": f"The LLM API returned an error: {exc}",
                 "reason": "permanent_error",
                 "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
             }
     except Exception as exc:
         return {
@@ -438,13 +524,48 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
             "error": f"An unexpected error occurred: {exc}",
             "reason": "unknown_error",
             "reasoning": "",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": "0.00",
+            "model": "",
         }
+
+    # Resolve provider: explicit override → org default → settings fallback.
+    cost = Decimal("0.00")
+    provider = thread.tsession.llm_provider
+    if not provider:
+        from apps.llm.models import LLMProvider
+
+        provider = await sync_to_async(
+            lambda: (
+                LLMProvider.objects.filter(organization=thread.tsession.organization, enabled=True)
+                .order_by("-is_default")
+                .first()
+            )
+        )()
+    if provider:
+        cost = Decimal(resp.input_tokens) * provider.cost_per_1m_input_tokens / Decimal(
+            "1000000"
+        ) + Decimal(resp.output_tokens) * provider.cost_per_1m_output_tokens / Decimal("1000000")
+
+    # Update TSession counters atomically.
+    await sync_to_async(_update_session_usage)(
+        str(thread.tsession.id),
+        resp.input_tokens,
+        resp.output_tokens,
+        str(cost),
+    )
+
     return {
         "content": resp.content or "",
         "tool_calls": [
             {"id": t.id, "name": t.name, "arguments": t.arguments} for t in resp.tool_calls
         ],
         "reasoning": resp.reasoning or "",
+        "input_tokens": resp.input_tokens,
+        "output_tokens": resp.output_tokens,
+        "cost": str(cost),
+        "model": resp.model or "",
     }
 
 
@@ -779,6 +900,33 @@ def _complete_tool_call(tool_call_id: str, result: dict) -> None:
     tool_call.result = result
     tool_call.status = ToolCall.Status.COMPLETED
     tool_call.save()
+
+
+def _update_session_usage(
+    session_id: str, input_tokens: int, output_tokens: int, cost: str
+) -> dict:
+    _setup_django_models()
+    from decimal import Decimal
+
+    from django.db.models import F
+    from django.utils import timezone
+
+    from apps.sessions.models import TSession
+
+    TSession.objects.filter(id=session_id).update(
+        total_input_tokens=F("total_input_tokens") + input_tokens,
+        total_output_tokens=F("total_output_tokens") + output_tokens,
+        total_tokens=F("total_tokens") + input_tokens + output_tokens,
+        total_cost=F("total_cost") + Decimal(cost),
+        cumulative_context_tokens=F("cumulative_context_tokens") + input_tokens + output_tokens,
+        updated_at=timezone.now(),
+    )
+    # Manually trigger usage broadcast since QuerySet.update() doesn't emit post_save
+    from apps.ws.signals import broadcast_usage
+
+    session = TSession.objects.get(id=session_id)
+    broadcast_usage(TSession, session, created=False)
+    return {"session_id": session_id, "updated": True}
 
 
 @activity.defn

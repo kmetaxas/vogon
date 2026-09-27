@@ -25,10 +25,24 @@ class TSessionSerializer(serializers.ModelSerializer):
             "created_by",
             "llm_provider",
             "llm_provider_name",
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_tokens",
+            "total_cost",
+            "cumulative_context_tokens",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_tokens",
+            "total_cost",
+            "cumulative_context_tokens",
+        ]
 
 
 class ThreadSerializer(serializers.ModelSerializer):
@@ -95,6 +109,9 @@ class MessageSerializer(serializers.ModelSerializer):
             "content",
             "tool_call",
             "created_by",
+            "input_tokens",
+            "output_tokens",
+            "cost",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]

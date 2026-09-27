@@ -65,6 +65,8 @@ class OpenAICompatibleClient:
         resp = await self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
         reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "thinking", None)
+        input_tokens = getattr(resp.usage, "prompt_tokens", 0) if resp.usage else 0
+        output_tokens = getattr(resp.usage, "completion_tokens", 0) if resp.usage else 0
         return LLMResponse(
             content=msg.content,
             tool_calls=[
@@ -76,4 +78,7 @@ class OpenAICompatibleClient:
                 for tc in (msg.tool_calls or [])
             ],
             reasoning=reasoning,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=resp.model,
         )

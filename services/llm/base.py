@@ -30,6 +30,9 @@ class LLMResponse:
     content: str | None
     tool_calls: list[ToolCall]
     reasoning: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model: str | None = None
 
 
 class LLMClient(Protocol):

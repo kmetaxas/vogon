@@ -1,0 +1,42 @@
+{% load money_tags %}
+<div class="session-usage-info">
+  <span class="usage-stat" title="Total tokens used">
+    <span class="usage-label">Tokens</span>
+    <span class="usage-value">{{ session.total_tokens }}</span>
+  </span>
+  <span class="usage-stat" title="Input / Output">
+    <span class="usage-label">In / Out</span>
+    <span class="usage-value">{{ session.total_input_tokens }} / {{ session.total_output_tokens }}</span>
+  </span>
+  <span class="usage-stat" title="Context size">
+    <span class="usage-label">Context</span>
+    <span class="usage-value">{{ session.cumulative_context_tokens }}</span>
+  </span>
+  <span class="usage-stat" title="Total accumulated cost">
+    <span class="usage-label">Spend</span>
+    <span class="usage-value">{{ session.total_cost|money }}</span>
+  </span>
+  {% if is_mixed_models %}
+  <span class="usage-stat" title="Multiple models were used">
+    <span class="usage-label">Model</span>
+    <span class="usage-value">Mixed models</span>
+  </span>
+  <span class="usage-stat" title="Pricing varies by model">
+    <span class="usage-label">Pricing</span>
+    <span class="usage-value">Mixed pricing</span>
+  </span>
+  <span class="usage-stat" title="Model breakdown: {% for name in model_names %}{{ name }}{% if not forloop.last %}, {% endif %}{% endfor %}">
+    <span class="usage-label">Breakdown</span>
+    <span class="usage-value">{{ model_names|length }} models</span>
+  </span>
+  {% elif resolved_provider %}
+  <span class="usage-stat" title="Active provider / model">
+    <span class="usage-label">Model</span>
+    <span class="usage-value">{{ resolved_provider.name }}</span>
+  </span>
+  <span class="usage-stat" title="Pricing per 1M tokens (active provider)">
+    <span class="usage-label">Pricing</span>
+    <span class="usage-value">{{ resolved_provider.cost_per_1m_input_tokens|money }} / {{ resolved_provider.cost_per_1m_output_tokens|money }}</span>
+  </span>
+  {% endif %}
+</div>

@@ -28,6 +28,18 @@ from apps.sessions.temporal_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _resolved_provider(session):
+    from apps.llm.models import LLMProvider
+
+    if session.llm_provider:
+        return session.llm_provider
+    return (
+        LLMProvider.objects.filter(organization=session.organization, enabled=True)
+        .order_by("-is_default")
+        .first()
+    )
+
+
 def _thread_ui_context(session, user):
     threads = list(session.threads_visible_to(user).order_by("-created_at"))
     for thread in threads:
@@ -36,12 +48,22 @@ def _thread_ui_context(session, user):
     followed_threads = [
         thread for thread in threads if thread.user_id != user.id and thread.is_followed_by_user
     ]
+    resolved_provider = _resolved_provider(session)
+    model_names = set(
+        session.threads.filter(messages__role=Message.Role.ASSISTANT)
+        .exclude(messages__model_name="")
+        .values_list("messages__model_name", flat=True)
+    )
+    is_mixed = len(model_names) > 1
     return {
         "session": session,
         "threads": threads,
         "primary_thread": primary_thread,
         "followed_threads": followed_threads,
         "can_complete_session": session.created_by_id == user.id,
+        "resolved_provider": resolved_provider,
+        "model_names": model_names,
+        "is_mixed_models": is_mixed,
     }
 
 
@@ -128,6 +150,10 @@ def _build_chat_items(messages, events, assistant_progress=None):
             "label": None,
             "detail": None,
             "created_at": m["created_at"].isoformat(),
+            "input_tokens": m.get("input_tokens", 0),
+            "output_tokens": m.get("output_tokens", 0),
+            "cost": m.get("cost", 0),
+            "model_name": m.get("model_name", ""),
         }
         refs = m.get("metadata", {}).get("references", [])
         if refs:
@@ -278,7 +304,17 @@ def _build_assistant_progress(thread) -> dict | None:
 
 def _thread_messages_context(session, thread, signal_error=None):
     messages = list(
-        thread.latest_messages().values("id", "role", "content", "metadata", "created_at")
+        thread.latest_messages().values(
+            "id",
+            "role",
+            "content",
+            "metadata",
+            "created_at",
+            "input_tokens",
+            "output_tokens",
+            "cost",
+            "model_name",
+        )
     )
     events = list(
         thread.agent_events.order_by("created_at").values(
@@ -286,12 +322,21 @@ def _thread_messages_context(session, thread, signal_error=None):
         )
     )
     progress = _build_assistant_progress(thread)
+    model_names = set(
+        session.threads.filter(messages__role=Message.Role.ASSISTANT)
+        .exclude(messages__model_name="")
+        .values_list("messages__model_name", flat=True)
+    )
+    is_mixed = len(model_names) > 1
     return {
         "session": session,
         "thread": thread,
         "items": _build_chat_items(messages, events, assistant_progress=progress),
         "assistant_progress": progress,
         "signal_error": signal_error,
+        "resolved_provider": _resolved_provider(session),
+        "model_names": model_names,
+        "is_mixed_models": is_mixed,
     }
 
 
@@ -401,6 +446,7 @@ class ThreadDetailPartialView(OrganizationRequiredMixin, View):
             "llm_providers": LLMProvider.objects.filter(
                 organization=self.organization, enabled=True
             ).order_by("-is_default", "name"),
+            "resolved_provider": _resolved_provider(session),
         }
         return render(request, "sessions/_thread_pane.html", context)
 
@@ -608,13 +654,18 @@ class SessionCompleteView(OrganizationRequiredMixin, View):
                 return render(request, "sessions/_status_badge.html", {"session": session})
             messages = list(
                 primary_thread.latest_messages().values(
-                    "id", "role", "content", "metadata", "created_at"
+                    "id", "role", "content", "metadata", "created_at", "model_name"
                 )
             )
             events = list(
                 primary_thread.agent_events.order_by("created_at").values(
                     "id", "kind", "label", "detail", "created_at"
                 )
+            )
+            model_names = set(
+                session.threads.filter(messages__role=Message.Role.ASSISTANT)
+                .exclude(messages__model_name="")
+                .values_list("messages__model_name", flat=True)
             )
             return render(
                 request,
@@ -626,6 +677,9 @@ class SessionCompleteView(OrganizationRequiredMixin, View):
                     "is_primary": True,
                     "primary_thread": primary_thread,
                     "can_complete_session": True,
+                    "resolved_provider": _resolved_provider(session),
+                    "model_names": model_names,
+                    "is_mixed_models": len(model_names) > 1,
                 },
             )
 

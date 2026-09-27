@@ -97,6 +97,11 @@
                 '/sessions/' + '{{ session.id }}' + '/threads/',
                 { target: '#thread-nav', swap: 'outerHTML' }
             );
+        } else if (msg.type === 'usage') {
+            var usageDiv = document.querySelector('.session-usage-info');
+            if (usageDiv && msg.payload && msg.payload.usage_html) {
+                usageDiv.outerHTML = msg.payload.usage_html;
+            }
         }
     }
 

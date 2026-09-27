@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from django.template import Context, Template
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -496,3 +499,36 @@ class OrganizationSetupMiddlewareTests(TestCase):
         self.client.force_login(superuser)
         response = self.client.get(reverse("core:dashboard"))
         self.assertEqual(response.status_code, 200)
+
+
+class MoneyFilterTests(TestCase):
+    def _render(self, value):
+        template = Template("{% load money_tags %}{{ value|money }}")
+        return template.render(Context({"value": value}))
+
+    def test_none_renders_zero(self):
+        self.assertEqual(self._render(None), "$0.00")
+
+    def test_zero_decimal_renders_zero(self):
+        self.assertEqual(self._render(Decimal("0")), "$0.00")
+
+    def test_zero_with_decimals_renders_zero(self):
+        self.assertEqual(self._render(Decimal("0.00")), "$0.00")
+
+    def test_trailing_zeros_normalized_to_two_places(self):
+        self.assertEqual(self._render(Decimal("0.500000")), "$0.50")
+
+    def test_single_decimal_padded_to_two_places(self):
+        self.assertEqual(self._render(Decimal("1.5")), "$1.50")
+
+    def test_integer_value_renders_two_places(self):
+        self.assertEqual(self._render(Decimal("3")), "$3.00")
+
+    def test_higher_precision_preserved(self):
+        self.assertEqual(self._render(Decimal("0.123456")), "$0.123456")
+
+    def test_string_input_supported(self):
+        self.assertEqual(self._render("2.5"), "$2.50")
+
+    def test_invalid_input_renders_zero(self):
+        self.assertEqual(self._render("not-a-number"), "$0.00")
