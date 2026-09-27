@@ -106,6 +106,73 @@ class CheckViewSet(viewsets.ModelViewSet):
         except Exception as exc:
             return Response({"status": "error", "error": str(exc)}, status=500)
 
+    @action(methods=["get"], detail=True)
+    def export(self, request, pk=None):
+        """Export a Check definition as JSON."""
+        check = self.get_object()
+        data = {
+            "version": "1.0",
+            "check": {
+                "name": check.name,
+                "description": check.description,
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "timezone": check.timezone,
+                "execution_mode": check.execution_mode,
+                "evaluation_config": check.evaluation_config,
+                "notification_config": check.notification_config,
+                "execution_budget": check.execution_budget,
+            },
+        }
+        return Response(data)
+
+    @action(methods=["post"], detail=False)
+    def import_check(self, request):
+        """Import a Check definition from JSON."""
+        data = request.data
+        check_data = data.get("check", {})
+
+        name = check_data.get("name")
+        if not name:
+            return Response({"error": "name is required"}, status=400)
+
+        organization = self.request.user.get_current_organization()
+
+        if Check.objects.filter(organization=organization, name=name).exists():
+            return Response({"error": f"Check with name '{name}' already exists"}, status=400)
+
+        schedule_type = check_data.get("schedule_type", Check.ScheduleType.INTERVAL)
+        schedule_expression = check_data.get("schedule_expression", "60")
+        execution_mode = check_data.get("execution_mode", Check.ExecutionMode.DETERMINISTIC)
+
+        check = Check.objects.create(
+            organization=organization,
+            name=name,
+            description=check_data.get("description", ""),
+            schedule_type=schedule_type,
+            schedule_expression=schedule_expression,
+            timezone=check_data.get("timezone", "UTC"),
+            execution_mode=execution_mode,
+            evaluation_config=check_data.get("evaluation_config", {}),
+            notification_config=check_data.get("notification_config", {}),
+            execution_budget=check_data.get("execution_budget", {}),
+            created_by=self.request.user,
+        )
+
+        CheckVersion.objects.create(
+            check=check,
+            version_number=1,
+            definition_snapshot=check_data,
+        )
+
+        return Response(
+            {
+                "status": "created",
+                "check_id": str(check.id),
+            },
+            status=201,
+        )
+
 
 class CheckVersionViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
     queryset = CheckVersion.objects.all()

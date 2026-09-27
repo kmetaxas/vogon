@@ -224,6 +224,29 @@ class CheckExecution(models.Model):
         elapsed = (timezone.now() - last.triggered_at).total_seconds()
         return elapsed > (expected_interval_seconds * 3)
 
+    @classmethod
+    def concurrent_count_for_org(cls, organization) -> int:
+        """Count currently running CheckExecutions for an organization."""
+        try:
+            return cls.objects.filter(
+                check__organization=organization,
+                execution_status=cls.ExecutionStatus.RUNNING,
+            ).count()
+        except Exception:
+            return 0
+
+    @classmethod
+    def can_execute(cls, organization) -> bool:
+        """Check if the organization can start a new Check execution.
+
+        Respects CHECK_MAX_CONCURRENT_PER_ORG from settings.
+        """
+        from django.conf import settings
+
+        max_concurrent = getattr(settings, "CHECK_MAX_CONCURRENT_PER_ORG", 5)
+        current = cls.concurrent_count_for_org(organization)
+        return current < max_concurrent
+
 
 class CheckHealthState(models.Model):
     objects = models.Manager()

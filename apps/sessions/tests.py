@@ -631,7 +631,11 @@ class CheckWorkflowTests(SimpleTestCase):
         workflow_instance = CheckWorkflow()
         execute_activity = AsyncMock(
             side_effect=[
-                {"execution_mode": "ai_assisted", "evaluation_config": {}},
+                {
+                    "execution_mode": "ai_assisted",
+                    "evaluation_config": {},
+                    "llm_provider_id": "provider-check-2",
+                },
                 {"id": "execution-2"},
                 {
                     "content": (
@@ -667,6 +671,7 @@ class CheckWorkflowTests(SimpleTestCase):
         self.assertNotIn("dispatch_actions", names)
         call_llm_args = execute_activity.await_args_list[names.index("call_llm")].kwargs["args"]
         self.assertEqual(call_llm_args[0], "check-2")
+        self.assertEqual(call_llm_args[2], "provider-check-2")
         self.assertIn("structured assessment", call_llm_args[1][0]["content"])
 
     def test_parse_llm_evaluation_normalizes_invalid_json_and_fallback_text(self):
@@ -689,7 +694,11 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
         tool_call = {"id": "tc1", "name": "query_prometheus", "arguments": {"query": "up"}}
         execute_activity = AsyncMock(
             side_effect=[
-                {"check_name": "API Health", "investigation_goal": "Verify API health"},
+                {
+                    "check_name": "API Health",
+                    "investigation_goal": "Verify API health",
+                    "llm_provider_id": "provider-auto-1",
+                },
                 {"id": "execution-1"},
                 {
                     "content": "Need metrics",
@@ -736,6 +745,9 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
         self.assertEqual(result["investigation_results"][0]["tools"][0]["result"]["status"], "up")
         names = [call.args[0] for call in execute_activity.await_args_list]
         self.assertEqual(names.count("call_llm"), 3)
+        for call in execute_activity.await_args_list:
+            if call.args[0] == "call_llm":
+                self.assertEqual(call.kwargs["args"][2], "provider-auto-1")
         self.assertIn("execute_llm_tool", names)
         self.assertEqual(
             execute_activity.await_args_list[names.index("execute_llm_tool")].kwargs["args"],
@@ -1185,6 +1197,46 @@ class TemporalActivityTests(TransactionTestCase):
         asyncio.run(call_llm(str(thread.id), [{"role": "user", "content": "hi"}]))
 
         mock_get_client.assert_called_once_with(str(organization.id), None)
+
+    @patch("services.llm.registry.get_llm_client")
+    def test_call_llm_uses_explicit_provider_override(self, mock_get_client):
+        from services.llm.base import LLMResponse
+
+        mock_client = Mock()
+        mock_client.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        mock_get_client.return_value = mock_client
+
+        user = User.objects.create_user(username="explicit_user", password="pass")
+        organization = Organization.objects.create(name="Explicit", slug="explicit")
+        session_provider = LLMProvider.objects.create(
+            organization=organization,
+            name="Session",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="session-model",
+        )
+        check_provider = LLMProvider.objects.create(
+            organization=organization,
+            name="Check",
+            provider_type=LLMProvider.ProviderType.OPENAI_COMPAT,
+            model="check-model",
+        )
+        session = TSession.objects.create(
+            organization=organization,
+            title="Explicit Session",
+            created_by=user,
+            llm_provider=session_provider,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        asyncio.run(
+            call_llm(
+                str(thread.id),
+                [{"role": "user", "content": "hi"}],
+                str(check_provider.id),
+            )
+        )
+
+        mock_get_client.assert_called_once_with(str(organization.id), str(check_provider.id))
 
 
 class AgentErrorTests(TransactionTestCase):

@@ -1,11 +1,14 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false, reportOptionalMemberAccess=false
 
 import importlib
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from django.core import mail
+from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
 from apps.checks.models import (
@@ -429,6 +432,62 @@ class CheckAPITests(TestCase):
         self.assertIn(response.status_code, (401, 403))
 
 
+class CheckImportExportTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="ie_user", password="pass")
+        self.organization = Organization.objects.create(name="IE Org", slug="ie-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def test_export_check(self):
+        check = _make_check(self.organization, name="Export Me")
+        response = self.client.get(f"/api/checks/{check.id}/export/")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["check"]["name"], "Export Me")
+        self.assertEqual(data["version"], "1.0")
+
+    def test_import_check(self):
+        response = self.client.post(
+            "/api/checks/import_check/",
+            {
+                "version": "1.0",
+                "check": {
+                    "name": "Imported Check",
+                    "schedule_type": Check.ScheduleType.CRON,
+                    "schedule_expression": "0 */6 * * *",
+                    "execution_mode": Check.ExecutionMode.AI_ASSISTED,
+                    "evaluation_config": {
+                        "rules": [
+                            {
+                                "type": "numeric_comparison",
+                                "path": "cpu",
+                                "operator": "gt",
+                                "threshold": 0.8,
+                            }
+                        ]
+                    },
+                },
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(Check.objects.filter(name="Imported Check").exists())
+
+    def test_import_duplicate_name_fails(self):
+        _make_check(self.organization, name="Duplicate")
+        response = self.client.post(
+            "/api/checks/import_check/",
+            {"version": "1.0", "check": {"name": "Duplicate"}},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+
 class CheckScheduleLifecycleTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="sched_user", password="pass")
@@ -561,6 +620,49 @@ class CheckExecutionQueryTests(TestCase):
             check=self.check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
         )
         self.assertFalse(CheckExecution.is_missed(self.check, expected_interval_seconds=3600))
+
+
+class CheckConcurrencyTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="cc_user", password="pass")
+        self.organization = Organization.objects.create(name="CC Org", slug="cc-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    def test_concurrent_count(self):
+        check = _make_check(self.organization)
+        CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.RUNNING
+        )
+        CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.RUNNING
+        )
+        CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+        count = CheckExecution.concurrent_count_for_org(self.organization)
+        self.assertEqual(count, 2)
+
+    def test_can_execute_within_limit(self):
+        check = _make_check(self.organization)
+        CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.RUNNING
+        )
+        self.assertTrue(CheckExecution.can_execute(self.organization))
+
+    def test_can_execute_at_limit(self):
+        check = _make_check(self.organization)
+        from django.conf import settings
+
+        max_count = getattr(settings, "CHECK_MAX_CONCURRENT_PER_ORG", 5)
+        for _ in range(max_count):
+            CheckExecution.objects.create(
+                check=check, execution_status=CheckExecution.ExecutionStatus.RUNNING
+            )
+        self.assertFalse(CheckExecution.can_execute(self.organization))
 
 
 class WebhookChannelTests(TestCase):
@@ -840,3 +942,77 @@ class TeamsChannelTests(TestCase):
         result = TeamsChannel.send(check, execution, action_log)
         self.assertEqual(result["status"], "failed")
         self.assertIn("No Teams webhook URL", result["error"])
+
+
+class CheckCleanupTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="clean_user", password="pass")
+        self.organization = Organization.objects.create(name="Clean Org", slug="clean-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+
+    def _age(self, instance, days=100):
+        """Backdate an auto_now_add timestamp to simulate an old record."""
+        field = "triggered_at" if isinstance(instance, CheckExecution) else "created_at"
+        setattr(instance, field, timezone.now() - timedelta(days=days))
+        instance.save(update_fields=[field])
+
+    def test_cleanup_deletes_old_executions(self):
+        check = _make_check(self.organization)
+        old = CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+        self._age(old)
+
+        recent = CheckExecution.objects.create(
+            check=check, execution_status=CheckExecution.ExecutionStatus.COMPLETED
+        )
+
+        call_command("cleanup_checks")
+
+        self.assertFalse(CheckExecution.objects.filter(id=old.id).exists())
+        self.assertTrue(CheckExecution.objects.filter(id=recent.id).exists())
+
+    def test_cleanup_deletes_old_action_logs(self):
+        check = _make_check(self.organization)
+        old_log = CheckActionLog.objects.create(
+            check=check, action_type=CheckActionLog.ActionType.EMAIL
+        )
+        self._age(old_log)
+        recent_log = CheckActionLog.objects.create(
+            check=check, action_type=CheckActionLog.ActionType.EMAIL
+        )
+
+        call_command("cleanup_checks")
+
+        self.assertFalse(CheckActionLog.objects.filter(id=old_log.id).exists())
+        self.assertTrue(CheckActionLog.objects.filter(id=recent_log.id).exists())
+
+    def test_cleanup_keeps_latest_version(self):
+        check = _make_check(self.organization)
+        # An execution must exist so the command iterates over this check.
+        CheckExecution.objects.create(check=check)
+
+        old_v1 = CheckVersion.objects.create(check=check, version_number=1, definition_snapshot={})
+        self._age(old_v1)
+        old_v2 = CheckVersion.objects.create(check=check, version_number=2, definition_snapshot={})
+        self._age(old_v2)
+        latest = CheckVersion.objects.create(check=check, version_number=3, definition_snapshot={})
+
+        call_command("cleanup_checks")
+
+        self.assertFalse(CheckVersion.objects.filter(id=old_v1.id).exists())
+        self.assertFalse(CheckVersion.objects.filter(id=old_v2.id).exists())
+        self.assertTrue(CheckVersion.objects.filter(id=latest.id).exists())
+
+    def test_cleanup_keeps_recent_versions(self):
+        check = _make_check(self.organization)
+        CheckExecution.objects.create(check=check)
+        recent = CheckVersion.objects.create(check=check, version_number=1, definition_snapshot={})
+
+        call_command("cleanup_checks")
+
+        self.assertTrue(CheckVersion.objects.filter(id=recent.id).exists())

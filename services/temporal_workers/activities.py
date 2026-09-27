@@ -392,8 +392,15 @@ def _build_llm_context(thread_id: str, user_message: dict) -> dict:
 
 
 @activity.defn
-async def call_llm(thread_id: str, messages: list[dict]) -> dict:
-    """Call the LLM and return the response."""
+async def call_llm(
+    thread_id: str, messages: list[dict], llm_provider_id: str | None = None
+) -> dict:
+    """Call the LLM and return the response.
+
+    ``llm_provider_id`` is an optional explicit provider override (used by Check
+    workflows, which carry their own per-Check provider). When omitted, the
+    provider configured on the Thread's session is used.
+    """
     from decimal import Decimal
 
     from httpx import TimeoutException
@@ -457,7 +464,9 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
             "model": "",
         }
 
-    provider_id = str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
+    provider_id = llm_provider_id or (
+        str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
+    )
     client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id), provider_id)
     llm_messages = [
         LLMMessage(
@@ -530,9 +539,15 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
             "model": "",
         }
 
-    # Resolve provider: explicit override → org default → settings fallback.
+    # Resolve provider: explicit override → session provider → org default.
     cost = Decimal("0.00")
-    provider = thread.tsession.llm_provider
+    provider = None
+    if llm_provider_id:
+        from apps.llm.models import LLMProvider
+
+        provider = await sync_to_async(LLMProvider.objects.filter(id=llm_provider_id).first)()
+    if not provider:
+        provider = thread.tsession.llm_provider
     if not provider:
         from apps.llm.models import LLMProvider
 
