@@ -28,6 +28,7 @@ dependencies = [
   "pygments>=2.17",
   "channels[daphne]>=4.0",
   "channels-postgres>=1.1.4",
+  "croniter>=3.0",
 ]
 
 [project.optional-dependencies]

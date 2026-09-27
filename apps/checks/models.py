@@ -3,7 +3,6 @@
 import uuid
 from decimal import Decimal
 
-from croniter import croniter
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -91,6 +90,8 @@ class Check(models.Model):
         return f"{self.name} ({self.organization.slug})"
 
     def clean(self):
+        from croniter import croniter
+
         super().clean()
         expression = (self.schedule_expression or "").strip()
         if not expression:
