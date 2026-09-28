@@ -52,6 +52,17 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 json.loads(notification_config_raw) if notification_config_raw else {}
             )
         except json.JSONDecodeError:
+            check = {
+                "name": request.POST.get("name", ""),
+                "description": request.POST.get("description", ""),
+                "instructions": request.POST.get("instructions", ""),
+                "schedule_type": request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
+                "schedule_expression": request.POST.get("schedule_expression", "60"),
+                "timezone": request.POST.get("timezone", "UTC"),
+                "execution_mode": request.POST.get(
+                    "execution_mode", Check.ExecutionMode.DETERMINISTIC
+                ),
+            }
             return render(
                 request,
                 "checks/check_form.html",
@@ -59,6 +70,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                     "organization": self.organization,
                     "schedule_types": Check.ScheduleType.choices,
                     "execution_modes": Check.ExecutionMode.choices,
+                    "check": check,
                     "error": "Invalid JSON in config fields.",
                     "evaluation_config_raw": evaluation_config_raw,
                     "notification_config_raw": notification_config_raw,
