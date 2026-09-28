@@ -24,6 +24,7 @@ class CheckSerializer(serializers.ModelSerializer):
             "organization_name",
             "name",
             "description",
+            "instructions",
             "enabled",
             "schedule_type",
             "schedule_expression",

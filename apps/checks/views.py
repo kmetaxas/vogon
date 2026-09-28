@@ -45,6 +45,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             organization=self.organization,
             name=request.POST.get("name", "Unnamed Check"),
             description=request.POST.get("description", ""),
+            instructions=request.POST.get("instructions", ""),
             schedule_type=request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
             schedule_expression=request.POST.get("schedule_expression", "60"),
             timezone=request.POST.get("timezone", "UTC"),
@@ -71,6 +72,7 @@ class CheckEditView(OrganizationRequiredMixin, View):
         check = get_object_or_404(Check, id=check_id, organization=self.organization)
         check.name = request.POST.get("name", check.name)
         check.description = request.POST.get("description", check.description)
+        check.instructions = request.POST.get("instructions", check.instructions)
         check.schedule_type = request.POST.get("schedule_type", check.schedule_type)
         check.schedule_expression = request.POST.get(
             "schedule_expression", check.schedule_expression

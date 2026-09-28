@@ -30,6 +30,10 @@ class Check(models.Model):
     )
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    instructions = models.TextField(
+        blank=True,
+        help_text="System prompt or instructions for the LLM when evaluating this check. Used in AI-Assisted and Autonomous modes.",
+    )
     enabled = models.BooleanField(default=True)
     schedule_type = models.CharField(
         max_length=20,
