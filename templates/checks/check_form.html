@@ -65,13 +65,21 @@
                 <textarea name="evaluation_config" class="form-control" rows="6" id="id-evaluation-config"></textarea>
                 <div class="form-help">JSON object with rules for deterministic evaluation. Example: <code>{'rules': [{'type': 'numeric_comparison', 'path': 'cpu.usage_percent', 'operator': 'gt', 'threshold': 90}]}</code></div>
             </div>
-            {{ check.evaluation_config|default:"{}"|json_script:"evaluation-config-data" }}
+            {% if check and check.evaluation_config %}
+            {{ check.evaluation_config|json_script:"evaluation-config-data" }}
+            {% else %}
+            <script type="application/json" id="evaluation-config-data">{}</script>
+            {% endif %}
             <div class="form-group">
                 <label class="form-label">Notification Config (JSON)</label>
                 <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
                 <div class="form-help">JSON object with notification channels and conditions.</div>
             </div>
-            {{ check.notification_config|default:"{}"|json_script:"notification-config-data" }}
+            {% if check and check.notification_config %}
+            {{ check.notification_config|json_script:"notification-config-data" }}
+            {% else %}
+            <script type="application/json" id="notification-config-data">{}</script>
+            {% endif %}
             <script>
             (function() {
                 function populateTextarea(textareaId, dataId, rawValue) {

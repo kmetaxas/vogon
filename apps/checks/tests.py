@@ -1285,7 +1285,10 @@ class CheckUIViewTests(TestCase):
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
                 "execution_mode": check.execution_mode,
-                "evaluation_config": '{"rules": [{"type": "numeric_comparison", "path": "cpu.usage_percent", "operator": "gt", "threshold": 90}]}',
+                "evaluation_config": (
+                    '{"rules": [{"type": "numeric_comparison", "path": "cpu.usage_percent", '
+                    '"operator": "gt", "threshold": 90}]}'
+                ),
                 "notification_config": '{"channels": ["email"]}',
             },
         )
@@ -1342,6 +1345,50 @@ class CheckUIViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Invalid JSON")
         self.assertFalse(Check.objects.filter(name="Invalid Create Test").exists())
+
+    def test_config_round_trip(self):
+        # Create with config
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Round Trip Test",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": (
+                    '{"rules": [{"type": "numeric_comparison", '
+                    '"path": "cpu.usage_percent", "operator": "gt", '
+                    '"threshold": 90}]}'
+                ),
+                "notification_config": '{"channels": ["email"]}',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check = Check.objects.get(name="Round Trip Test")
+        self.assertEqual(check.evaluation_config["rules"][0]["path"], "cpu.usage_percent")
+        self.assertEqual(check.notification_config["channels"], ["email"])
+
+        # Edit and verify config persists
+        response = self.client.post(
+            f"/checks/{check.id}/edit/",
+            {
+                "name": "Round Trip Test Updated",
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "execution_mode": check.execution_mode,
+                "evaluation_config": (
+                    '{"rules": [{"type": "numeric_comparison", '
+                    '"path": "memory.usage_percent", "operator": "gt", '
+                    '"threshold": 80}]}'
+                ),
+                "notification_config": '{"channels": ["email", "slack"]}',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check.refresh_from_db()
+        self.assertEqual(check.name, "Round Trip Test Updated")
+        self.assertEqual(check.evaluation_config["rules"][0]["path"], "memory.usage_percent")
+        self.assertEqual(check.notification_config["channels"], ["email", "slack"])
 
 
 class CheckScheduleValidationTests(TestCase):
