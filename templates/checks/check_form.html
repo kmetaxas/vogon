@@ -2,43 +2,64 @@
 {% block title %}{% if check %}Edit{% else %}New{% endif %} Check{% endblock %}
 {% block content %}
 <div class="container">
-    <h1>{% if check %}Edit{% else %}New{% endif %} Check</h1>
-    <form method="post">
-        {% csrf_token %}
-        <div class="form-group">
-            <label>Name</label>
-            <input type="text" name="name" value="{{ check.name|default:'' }}" required>
-        </div>
-        <div class="form-group">
-            <label>Description</label>
-            <textarea name="description">{{ check.description|default:'' }}</textarea>
-        </div>
-        <div class="form-group">
-            <label>Schedule Type</label>
-            <select name="schedule_type">
-                {% for value, label in schedule_types %}
-                <option value="{{ value }}" {% if check and check.schedule_type == value %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="form-group">
-            <label>Schedule Expression</label>
-            <input type="text" name="schedule_expression" value="{{ check.schedule_expression|default:'60' }}" required>
-        </div>
-        <div class="form-group">
-            <label>Timezone</label>
-            <input type="text" name="timezone" value="{{ check.timezone|default:'UTC' }}">
-        </div>
-        <div class="form-group">
-            <label>Execution Mode</label>
-            <select name="execution_mode">
-                {% for value, label in execution_modes %}
-                <option value="{{ value }}" {% if check and check.execution_mode == value %}selected{% endif %}>{{ label }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <button type="submit" class="btn btn-primary">Save</button>
-        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
-    </form>
+    <div class="check-form-header">
+        <h1>{% if check %}Edit{% else %}New{% endif %} Check</h1>
+        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">&larr; Back to Checks</a>
+    </div>
+
+    <div class="card">
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" class="form-control" value="{{ check.name|default:'' }}" required>
+                <div class="form-help">A unique name for this check.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-control" rows="3">{{ check.description|default:'' }}</textarea>
+                <div class="form-help">Human-readable description of what this check monitors.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Instructions / System Prompt</label>
+                <textarea name="instructions" class="form-control" rows="4">{{ check.instructions|default:'' }}</textarea>
+                <div class="form-help">System prompt or instructions for the LLM when evaluating this check. Used in AI-Assisted and Autonomous modes.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Schedule Type</label>
+                <select name="schedule_type" class="form-control">
+                    {% for value, label in schedule_types %}
+                    <option value="{{ value }}" {% if check and check.schedule_type == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-help">Interval runs every N seconds. Cron runs on a schedule expression.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Schedule Expression</label>
+                <input type="text" name="schedule_expression" class="form-control" value="{{ check.schedule_expression|default:'60' }}" required>
+                <div class="form-help">e.g. '60' for interval seconds, or '0 9 * * *' for cron</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Timezone</label>
+                <input type="text" name="timezone" class="form-control" value="{{ check.timezone|default:'UTC' }}">
+                <div class="form-help">Timezone for cron schedules (e.g. UTC, America/New_York)</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Execution Mode</label>
+                <select name="execution_mode" class="form-control">
+                    {% for value, label in execution_modes %}
+                    <option value="{{ value }}" {% if check and check.execution_mode == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-help mode-help">
+                    <strong>Deterministic</strong> — Run predefined capabilities and evaluate with fixed rules<br>
+                    <strong>AI Assisted</strong> — Run predefined capabilities and ask LLM to interpret results<br>
+                    <strong>Autonomous</strong> — LLM decides what to investigate and runs tools dynamically
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
+        </form>
+    </div>
 </div>
 {% endblock %}

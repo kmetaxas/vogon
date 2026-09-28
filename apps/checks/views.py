@@ -92,3 +92,55 @@ class CheckEditView(OrganizationRequiredMixin, View):
             },
         )
         return HttpResponseRedirect(reverse("checks:check-detail", kwargs={"check_id": check.id}))
+
+
+class CheckToggleView(OrganizationRequiredMixin, View):
+    def post(self, request, check_id):
+        check = get_object_or_404(Check, id=check_id, organization=self.organization)
+        check.enabled = not check.enabled
+        check.save()
+        return render(request, "checks/_check_row.html", {"check": check})
+
+
+class CheckTriggerView(OrganizationRequiredMixin, View):
+    def post(self, request, check_id):
+        check = get_object_or_404(Check, id=check_id, organization=self.organization)
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            result = asyncio.run(CheckScheduler.trigger_now(check))
+            return render(
+                request,
+                "checks/_action_result.html",
+                {"check": check, "message": f"Triggered: {result}"},
+            )
+        except Exception as exc:
+            return render(
+                request,
+                "checks/_action_result.html",
+                {"check": check, "message": f"Error: {exc}", "error": True},
+            )
+
+
+class CheckDryRunView(OrganizationRequiredMixin, View):
+    def post(self, request, check_id):
+        check = get_object_or_404(Check, id=check_id, organization=self.organization)
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            result = asyncio.run(CheckScheduler.trigger_now(check, dry_run=True))
+            return render(
+                request,
+                "checks/_action_result.html",
+                {"check": check, "message": f"Dry run: {result}"},
+            )
+        except Exception as exc:
+            return render(
+                request,
+                "checks/_action_result.html",
+                {"check": check, "message": f"Error: {exc}", "error": True},
+            )

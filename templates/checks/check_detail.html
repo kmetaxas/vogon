@@ -2,27 +2,128 @@
 {% block title %}{{ check.name }} — Check Detail{% endblock %}
 {% block content %}
 <div class="container">
-    <h1>{{ check.name }}</h1>
-    <p>{{ check.description }}</p>
-    <div class="meta">
-        <span>Mode: {{ check.get_execution_mode_display }}</span>
-        <span>Schedule: {{ check.get_schedule_type_display }} {{ check.schedule_expression }}</span>
-        <span>Status: {% if check.enabled %}Enabled{% else %}Disabled{% endif %}</span>
+    <div class="check-detail-header">
+        <h1>{{ check.name }}</h1>
+        <div class="check-detail-actions">
+            <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
+            <button class="btn {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
+                    hx-post="{% url 'checks:check-toggle' check.id %}"
+                    hx-target="body"
+                    hx-swap="none">
+                {% if check.enabled %}Disable{% else %}Enable{% endif %}
+            </button>
+            <button class="btn btn-primary"
+                    hx-post="{% url 'checks:check-trigger' check.id %}"
+                    hx-target="#action-toast"
+                    hx-swap="innerHTML">
+                Trigger Now
+            </button>
+            <button class="btn btn-secondary"
+                    hx-post="{% url 'checks:check-dry-run' check.id %}"
+                    hx-target="#action-toast"
+                    hx-swap="innerHTML">
+                Dry Run
+            </button>
+        </div>
     </div>
-    <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
 
-    <h2>Recent Executions</h2>
-    <table class="table">
-        <thead><tr><th>Time</th><th>Status</th><th>State</th></tr></thead>
-        <tbody>
-            {% for exec in executions %}
-            <tr>
-                <td>{{ exec.triggered_at }}</td>
-                <td>{{ exec.get_execution_status_display }}</td>
-                <td>{{ exec.get_health_state_display }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div id="action-toast"></div>
+
+    <div class="card">
+        <h2 class="card-title">Overview</h2>
+        <p>{{ check.description }}</p>
+        {% if check.instructions %}
+        <div class="form-group">
+            <label class="form-label">Instructions / System Prompt</label>
+            <pre class="code-block">{{ check.instructions }}</pre>
+        </div>
+        {% endif %}
+        <div class="meta-grid">
+            <div class="meta-item">
+                <span class="meta-label">Schedule</span>
+                <span class="meta-value">{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}{% if check.schedule_type == 'cron' %} ({{ check.timezone }}){% endif %}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Execution Mode</span>
+                <span class="meta-value">{{ check.get_execution_mode_display }}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Status</span>
+                <span class="meta-value">{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Health</span>
+                <span class="meta-value">
+                    {% if health_state %}
+                        {% if health_state.current_state == 'healthy' %}<span class="badge badge-success">Healthy</span>
+                        {% elif health_state.current_state == 'degraded' %}<span class="badge badge-warning">Degraded</span>
+                        {% elif health_state.current_state == 'critical' %}<span class="badge badge-failed">Critical</span>
+                        {% else %}<span class="badge badge-secondary">Unknown</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="badge badge-secondary">Unknown</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Created</span>
+                <span class="meta-value">{{ check.created_at|date:"Y-m-d H:i" }}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Updated</span>
+                <span class="meta-value">{{ check.updated_at|date:"Y-m-d H:i" }}</span>
+            </div>
+        </div>
+    </div>
+
+    {% if check.evaluation_config %}
+    <div class="card">
+        <h2 class="card-title">Evaluation Configuration</h2>
+        <pre class="code-block">{{ check.evaluation_config|json_script:"eval-config" }}</pre>
+    </div>
+    {% endif %}
+
+    {% if check.notification_config %}
+    <div class="card">
+        <h2 class="card-title">Notification Configuration</h2>
+        <pre class="code-block">{{ check.notification_config|json_script:"notif-config" }}</pre>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <h2 class="card-title">Recent Executions</h2>
+        {% if executions %}
+        <table class="table">
+            <thead>
+                <tr><th>Time</th><th>Status</th><th>State</th><th>Duration</th></tr>
+            </thead>
+            <tbody>
+                {% for exec in executions %}
+                <tr>
+                    <td>{{ exec.triggered_at|date:"Y-m-d H:i:s" }}</td>
+                    <td>
+                        {% if exec.execution_status == 'completed' %}<span class="badge badge-completed">Completed</span>
+                        {% elif exec.execution_status == 'running' %}<span class="badge badge-active">Running</span>
+                        {% elif exec.execution_status == 'failed' %}<span class="badge badge-failed">Failed</span>
+                        {% elif exec.execution_status == 'pending' %}<span class="badge badge-pending">Pending</span>
+                        {% else %}<span class="badge badge-secondary">{{ exec.execution_status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if exec.health_state == 'healthy' %}<span class="badge badge-success">Healthy</span>
+                        {% elif exec.health_state == 'degraded' %}<span class="badge badge-warning">Degraded</span>
+                        {% elif exec.health_state == 'critical' %}<span class="badge badge-failed">Critical</span>
+                        {% else %}<span class="badge badge-secondary">Unknown</span>
+                        {% endif %}
+                    </td>
+                    <td>{% if exec.started_at and exec.completed_at %}{{ exec.started_at|timesince:exec.completed_at }}{% else %}—{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-secondary">No executions yet.</p>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}
