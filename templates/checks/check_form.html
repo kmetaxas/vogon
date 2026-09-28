@@ -8,6 +8,9 @@
     </div>
 
     <div class="card">
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
         <form method="post">
             {% csrf_token %}
             <div class="form-group">
@@ -57,6 +60,43 @@
                     <strong>Autonomous</strong> — LLM decides what to investigate and runs tools dynamically
                 </div>
             </div>
+            <div class="form-group">
+                <label class="form-label">Evaluation Rules (JSON)</label>
+                <textarea name="evaluation_config" class="form-control" rows="6" id="id-evaluation-config"></textarea>
+                <div class="form-help">JSON object with rules for deterministic evaluation. Example: <code>{'rules': [{'type': 'numeric_comparison', 'path': 'cpu.usage_percent', 'operator': 'gt', 'threshold': 90}]}</code></div>
+            </div>
+            {{ check.evaluation_config|default:"{}"|json_script:"evaluation-config-data" }}
+            <div class="form-group">
+                <label class="form-label">Notification Config (JSON)</label>
+                <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
+                <div class="form-help">JSON object with notification channels and conditions.</div>
+            </div>
+            {{ check.notification_config|default:"{}"|json_script:"notification-config-data" }}
+            <script>
+            (function() {
+                function populateTextarea(textareaId, dataId, rawValue) {
+                    var textarea = document.getElementById(textareaId);
+                    if (!textarea) return;
+                    if (rawValue) {
+                        textarea.value = rawValue;
+                        return;
+                    }
+                    var dataEl = document.getElementById(dataId);
+                    if (dataEl) {
+                        try {
+                            var data = JSON.parse(dataEl.textContent);
+                            textarea.value = JSON.stringify(data, null, 2);
+                        } catch (e) {
+                            textarea.value = '{}';
+                        }
+                    } else {
+                        textarea.value = '{}';
+                    }
+                }
+                populateTextarea('id-evaluation-config', 'evaluation-config-data', '{{ evaluation_config_raw|default:""|escapejs }}');
+                populateTextarea('id-notification-config', 'notification-config-data', '{{ notification_config_raw|default:""|escapejs }}');
+            })();
+            </script>
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
         </form>

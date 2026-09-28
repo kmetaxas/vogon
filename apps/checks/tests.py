@@ -1226,6 +1226,123 @@ class CheckUIViewTests(TestCase):
         check.refresh_from_db()
         self.assertEqual(check.name, "Edited Name")
 
+    @patch("services.checks.scheduler.CheckScheduler.trigger_now", new_callable=AsyncMock)
+    def test_trigger_post_returns_200(self, mock_trigger):
+        mock_trigger.return_value = "workflow-id-123"
+        check = _make_check(self.organization, name="Trigger Test")
+        response = self.client.post(f"/checks/{check.id}/trigger/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Triggered:")
+        mock_trigger.assert_called_once()
+
+    @patch("services.checks.scheduler.CheckScheduler.trigger_now", new_callable=AsyncMock)
+    def test_dry_run_post_returns_200(self, mock_trigger):
+        mock_trigger.return_value = "workflow-id-456"
+        check = _make_check(self.organization, name="Dry Run Test")
+        response = self.client.post(f"/checks/{check.id}/dry-run/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Dry run:")
+        mock_trigger.assert_called_once_with(check, dry_run=True)
+
+    def test_trigger_get_returns_405(self):
+        check = _make_check(self.organization, name="Trigger 405 Test")
+        response = self.client.get(f"/checks/{check.id}/trigger/")
+        self.assertEqual(response.status_code, 405)
+
+    def test_dry_run_get_returns_405(self):
+        check = _make_check(self.organization, name="Dry Run 405 Test")
+        response = self.client.get(f"/checks/{check.id}/dry-run/")
+        self.assertEqual(response.status_code, 405)
+
+    def test_detail_toggle_returns_actions_partial(self):
+        check = _make_check(self.organization, name="Toggle Detail Test", enabled=True)
+        response = self.client.post(
+            f"/checks/{check.id}/toggle/",
+            HTTP_HX_REQUEST="true",
+            HTTP_HX_TARGET="#detail-actions",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Actions")
+        self.assertContains(response, "Enable")
+        self.assertNotContains(response, "<tr")
+
+    def test_list_toggle_returns_row_partial(self):
+        check = _make_check(self.organization, name="Toggle List Test", enabled=True)
+        response = self.client.post(
+            f"/checks/{check.id}/toggle/",
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "<tr")
+        self.assertContains(response, "Enable")
+
+    def test_edit_saves_config(self):
+        check = _make_check(self.organization, name="Config Edit Test")
+        response = self.client.post(
+            f"/checks/{check.id}/edit/",
+            {
+                "name": "Config Edit Test",
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "execution_mode": check.execution_mode,
+                "evaluation_config": '{"rules": [{"type": "numeric_comparison", "path": "cpu.usage_percent", "operator": "gt", "threshold": 90}]}',
+                "notification_config": '{"channels": ["email"]}',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check.refresh_from_db()
+        self.assertEqual(check.evaluation_config["rules"][0]["path"], "cpu.usage_percent")
+        self.assertEqual(check.notification_config["channels"], ["email"])
+
+    def test_edit_invalid_config_shows_error(self):
+        check = _make_check(self.organization, name="Invalid Config Test")
+        response = self.client.post(
+            f"/checks/{check.id}/edit/",
+            {
+                "name": "Invalid Config Test",
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "execution_mode": check.execution_mode,
+                "evaluation_config": "{invalid json}",
+                "notification_config": "{}",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Invalid JSON")
+
+    def test_create_saves_config(self):
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Config Create Test",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": '{"rules": []}',
+                "notification_config": '{"channels": ["slack"]}',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check = Check.objects.get(name="Config Create Test")
+        self.assertEqual(check.evaluation_config, {"rules": []})
+        self.assertEqual(check.notification_config, {"channels": ["slack"]})
+
+    def test_create_invalid_config_shows_error(self):
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Invalid Create Test",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": "{bad json}",
+                "notification_config": "{}",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Invalid JSON")
+        self.assertFalse(Check.objects.filter(name="Invalid Create Test").exists())
+
 
 class CheckScheduleValidationTests(TestCase):
     def setUp(self):

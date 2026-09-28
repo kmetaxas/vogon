@@ -36,8 +36,6 @@
                     <td>
                         <a href="{% url 'checks:check-detail' check.id %}" class="btn btn-sm btn-secondary">View</a>
                         <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-sm btn-secondary">Edit</a>
-                        <a href="{% url 'checks:check-trigger' check.id %}" class="btn btn-sm btn-secondary">Trigger</a>
-                        <a href="{% url 'checks:check-dry-run' check.id %}" class="btn btn-sm btn-secondary">Dry Run</a>
                         <button class="btn btn-sm {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
                                 hx-post="{% url 'checks:check-toggle' check.id %}"
                                 hx-target="#check-row-{{ check.id }}"

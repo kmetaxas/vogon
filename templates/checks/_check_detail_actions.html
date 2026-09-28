@@ -1,0 +1,24 @@
+<div id="detail-actions" class="card" style="margin-bottom:var(--spacing-lg);">
+    <h2 class="card-title">Actions</h2>
+    <div style="display:flex; gap:var(--spacing-md); flex-wrap:wrap; margin-top:var(--spacing-md);">
+        <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
+        <button class="btn {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
+                hx-post="{% url 'checks:check-toggle' check.id %}"
+                hx-target="#detail-actions"
+                hx-swap="outerHTML">
+            {% if check.enabled %}Disable{% else %}Enable{% endif %}
+        </button>
+        <button class="btn btn-primary"
+                hx-post="{% url 'checks:check-trigger' check.id %}"
+                hx-target="#action-result"
+                hx-swap="innerHTML">
+            Trigger Now
+        </button>
+        <button class="btn btn-secondary"
+                hx-post="{% url 'checks:check-dry-run' check.id %}"
+                hx-target="#action-result"
+                hx-swap="innerHTML">
+            Dry Run
+        </button>
+    </div>
+</div>

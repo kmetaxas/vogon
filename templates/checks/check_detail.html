@@ -2,128 +2,126 @@
 {% block title %}{{ check.name }} — Check Detail{% endblock %}
 {% block content %}
 <div class="container">
-    <div class="check-detail-header">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--spacing-lg);">
         <h1>{{ check.name }}</h1>
-        <div class="check-detail-actions">
+        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">&larr; Back to Checks</a>
+    </div>
+
+    <div id="action-result"></div>
+
+    <div id="detail-actions" class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Actions</h2>
+        <div style="display:flex; gap:var(--spacing-md); flex-wrap:wrap; margin-top:var(--spacing-md);">
             <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
-            <button class="btn {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
-                    hx-post="{% url 'checks:check-toggle' check.id %}"
-                    hx-target="body"
-                    hx-swap="none">
-                {% if check.enabled %}Disable{% else %}Enable{% endif %}
-            </button>
-            <button class="btn btn-primary"
-                    hx-post="{% url 'checks:check-trigger' check.id %}"
-                    hx-target="#action-toast"
-                    hx-swap="innerHTML">
-                Trigger Now
-            </button>
-            <button class="btn btn-secondary"
-                    hx-post="{% url 'checks:check-dry-run' check.id %}"
-                    hx-target="#action-toast"
-                    hx-swap="innerHTML">
-                Dry Run
-            </button>
+            <button hx-post="{% url 'checks:check-toggle' check.id %}" hx-target="#detail-actions" hx-swap="outerHTML" class="btn {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}">{% if check.enabled %}Disable{% else %}Enable{% endif %}</button>
+            <button hx-post="{% url 'checks:check-trigger' check.id %}" hx-target="#action-result" hx-swap="innerHTML" class="btn btn-primary">Trigger Now</button>
+            <button hx-post="{% url 'checks:check-dry-run' check.id %}" hx-target="#action-result" hx-swap="innerHTML" class="btn btn-secondary">Dry Run</button>
         </div>
     </div>
 
-    <div id="action-toast"></div>
-
-    <div class="card">
-        <h2 class="card-title">Overview</h2>
-        <p>{{ check.description }}</p>
-        {% if check.instructions %}
-        <div class="form-group">
-            <label class="form-label">Instructions / System Prompt</label>
-            <pre class="code-block">{{ check.instructions }}</pre>
-        </div>
-        {% endif %}
-        <div class="meta-grid">
-            <div class="meta-item">
-                <span class="meta-label">Schedule</span>
-                <span class="meta-value">{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}{% if check.schedule_type == 'cron' %} ({{ check.timezone }}){% endif %}</span>
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Details</h2>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:var(--spacing-md); margin-top:var(--spacing-md);">
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Name</div>
+                <div>{{ check.name }}</div>
             </div>
-            <div class="meta-item">
-                <span class="meta-label">Execution Mode</span>
-                <span class="meta-value">{{ check.get_execution_mode_display }}</span>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Description</div>
+                <div>{{ check.description|default:"—" }}</div>
             </div>
-            <div class="meta-item">
-                <span class="meta-label">Status</span>
-                <span class="meta-value">{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</span>
+            <div style="grid-column:1 / -1;">
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Instructions</div>
+                <div>{{ check.instructions|default:"—" }}</div>
             </div>
-            <div class="meta-item">
-                <span class="meta-label">Health</span>
-                <span class="meta-value">
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Schedule</div>
+                <div>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }} ({{ check.timezone }})</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Execution Mode</div>
+                <div>{{ check.get_execution_mode_display }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Status</div>
+                <div>{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Health State</div>
+                <div>
                     {% if health_state %}
                         {% if health_state.current_state == 'healthy' %}<span class="badge badge-success">Healthy</span>
                         {% elif health_state.current_state == 'degraded' %}<span class="badge badge-warning">Degraded</span>
-                        {% elif health_state.current_state == 'critical' %}<span class="badge badge-failed">Critical</span>
+                        {% elif health_state.current_state == 'critical' %}<span class="badge badge-danger">Critical</span>
                         {% else %}<span class="badge badge-secondary">Unknown</span>
                         {% endif %}
                     {% else %}
                         <span class="badge badge-secondary">Unknown</span>
                     {% endif %}
-                </span>
+                </div>
             </div>
-            <div class="meta-item">
-                <span class="meta-label">Created</span>
-                <span class="meta-value">{{ check.created_at|date:"Y-m-d H:i" }}</span>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Created At</div>
+                <div>{{ check.created_at }}</div>
             </div>
-            <div class="meta-item">
-                <span class="meta-label">Updated</span>
-                <span class="meta-value">{{ check.updated_at|date:"Y-m-d H:i" }}</span>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Updated At</div>
+                <div>{{ check.updated_at }}</div>
             </div>
         </div>
     </div>
 
-    {% if check.evaluation_config %}
-    <div class="card">
-        <h2 class="card-title">Evaluation Configuration</h2>
-        <pre class="code-block">{{ check.evaluation_config|json_script:"eval-config" }}</pre>
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Configuration</h2>
+        <div style="margin-top:var(--spacing-md);">
+            <h3>Evaluation Rules</h3>
+            <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5;">{{ check.evaluation_config|pprint }}</pre>
+        </div>
+        <div style="margin-top:var(--spacing-lg);">
+            <h3>Notification Config</h3>
+            <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5;">{{ check.notification_config|pprint }}</pre>
+        </div>
     </div>
-    {% endif %}
-
-    {% if check.notification_config %}
-    <div class="card">
-        <h2 class="card-title">Notification Configuration</h2>
-        <pre class="code-block">{{ check.notification_config|json_script:"notif-config" }}</pre>
-    </div>
-    {% endif %}
 
     <div class="card">
         <h2 class="card-title">Recent Executions</h2>
-        {% if executions %}
-        <table class="table">
+        <table class="table" style="width:100%; border-collapse:collapse; font-size:0.875rem; margin-top:var(--spacing-md);">
             <thead>
-                <tr><th>Time</th><th>Status</th><th>State</th><th>Duration</th></tr>
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Time</th>
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Status</th>
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">State</th>
+                </tr>
             </thead>
             <tbody>
                 {% for exec in executions %}
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ exec.triggered_at }}</td>
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                        {% if exec.execution_status == 'completed' %}<span class="badge badge-success">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'running' %}<span class="badge badge-active">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'failed' %}<span class="badge badge-danger">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'pending' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'cancelled' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'queued' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% else %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                        {% if exec.health_state == 'healthy' %}<span class="badge badge-success">{{ exec.get_health_state_display }}</span>
+                        {% elif exec.health_state == 'degraded' %}<span class="badge badge-warning">{{ exec.get_health_state_display }}</span>
+                        {% elif exec.health_state == 'critical' %}<span class="badge badge-danger">{{ exec.get_health_state_display }}</span>
+                        {% else %}<span class="badge badge-secondary">{{ exec.get_health_state_display }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% empty %}
                 <tr>
-                    <td>{{ exec.triggered_at|date:"Y-m-d H:i:s" }}</td>
-                    <td>
-                        {% if exec.execution_status == 'completed' %}<span class="badge badge-completed">Completed</span>
-                        {% elif exec.execution_status == 'running' %}<span class="badge badge-active">Running</span>
-                        {% elif exec.execution_status == 'failed' %}<span class="badge badge-failed">Failed</span>
-                        {% elif exec.execution_status == 'pending' %}<span class="badge badge-pending">Pending</span>
-                        {% else %}<span class="badge badge-secondary">{{ exec.execution_status }}</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if exec.health_state == 'healthy' %}<span class="badge badge-success">Healthy</span>
-                        {% elif exec.health_state == 'degraded' %}<span class="badge badge-warning">Degraded</span>
-                        {% elif exec.health_state == 'critical' %}<span class="badge badge-failed">Critical</span>
-                        {% else %}<span class="badge badge-secondary">Unknown</span>
-                        {% endif %}
-                    </td>
-                    <td>{% if exec.started_at and exec.completed_at %}{{ exec.started_at|timesince:exec.completed_at }}{% else %}—{% endif %}</td>
+                    <td colspan="3" style="padding:var(--spacing-md); text-align:center; color:var(--color-text-secondary);">No executions yet.</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
-        {% else %}
-        <p class="text-secondary">No executions yet.</p>
-        {% endif %}
     </div>
 </div>
 {% endblock %}
