@@ -7,7 +7,6 @@ graph TB
     %% EXTERNAL CLIENTS & SERVICES
     %% ============================================================
     subgraph EXT["External Clients & Services"]
-        direction TB
         Browser["Browser<br/>(HTMX + WebSocket)"]
         MCPClient["MCP Client"]
         MarvinAgent["Marvin Agent<br/>(custom, on-prem/cloud/k8s)"]
@@ -23,7 +22,6 @@ graph TB
     %% DJANGO CONTROL PLANE
     %% ============================================================
     subgraph DJANGO["Django Control Plane (:8000)"]
-        direction TB
         ASGI["ASGI App<br/>(HTTP + WebSocket)"]
         DRF["DRF API<br/>(/api/)"]
         Admin["Django Admin"]
@@ -43,7 +41,6 @@ graph TB
     %% MCP SERVER
     %% ============================================================
     subgraph MCP["MCP Server (:8080)"]
-        direction TB
         MCPMain["MCP main"]
         FastMCP["FastMCP(&quot;vogon&quot;)<br/>(http / stdio)"]
         MCPTools["Tools registry<br/>(find_tools, execute,<br/>request_architecture_design, ...)"]
@@ -54,7 +51,6 @@ graph TB
     %% TEMPORAL
     %% ============================================================
     subgraph TEMPORAL["Temporal (:7233, queue: vogon)"]
-        direction TB
         TemporalClient["Temporal client"]
         TroubleshootWF["TroubleshootWorkflow"]
         ThreadWF["ThreadWorkflow"]
@@ -75,7 +71,6 @@ graph TB
     %% gRPC SERVER
     %% ============================================================
     subgraph GRPC["gRPC Server (:50051)"]
-        direction TB
         GRPCMain["gRPC main<br/>(+ Temporal worker)"]
         MarvinServicer["MarvinServicer"]
         BiDiStream["Bi-directional stream<br/>Connect(stream AgentMessage)<br/>returns (stream ControlMessage)"]
@@ -88,7 +83,6 @@ graph TB
     %% LLM & EMBEDDINGS
     %% ============================================================
     subgraph LLM["LLM & Embeddings"]
-        direction TB
         LLMRegistry["LLM registry<br/>(per-org providers)"]
         OpenAICompat["OpenAI-compatible client<br/>(AsyncOpenAI)"]
         EmbedRegistry["Embedding registry"]
@@ -101,7 +95,6 @@ graph TB
     %% POSTGRES
     %% ============================================================
     subgraph PG["Postgres (:5432, pgvector/pg16)"]
-        direction TB
         DefaultDB["default DB<br/>(all Django models)"]
         ChannelsPG["channels_postgres<br/>(Channels layer)"]
         PgVector["pgvector extension<br/>(Capability.embedding,<br/>InfrastructureDesign.embedding)"]
