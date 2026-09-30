@@ -1,0 +1,258 @@
+%% Vogon System Architecture
+%% Django control plane orchestrating Marvin agents via gRPC,
+%% Temporal workflows, MCP server, LLM/embeddings, and Postgres+pgvector.
+graph TB
+
+    %% ============================================================
+    %% EXTERNAL CLIENTS & SERVICES
+    %% ============================================================
+    subgraph EXT["External Clients & Services"]
+        direction TB
+        Browser["Browser<br/>(HTMX + WebSocket)"]
+        MCPClient["MCP Client"]
+        MarvinAgent["Marvin Agent<br/>(custom, on-prem/cloud/k8s)"]
+        Prometheus["Prometheus"]
+        Alertmanager["Alertmanager"]
+        Teams["Microsoft Teams"]
+        Email["Email (SMTP)"]
+        Webhook["Generic Webhook"]
+        Ollama["Ollama / OpenAI / vLLM"]
+    end
+
+    %% ============================================================
+    %% DJANGO CONTROL PLANE
+    %% ============================================================
+    subgraph DJANGO["Django Control Plane (:8000)"]
+        direction TB
+        ASGI["ASGI App<br/>(HTTP + WebSocket)"]
+        DRF["DRF API<br/>(/api/)"]
+        Admin["Django Admin"]
+        Allauth["allauth<br/>(Google OAuth)"]
+        CoreApp["core app<br/>(org/user/MCP token)"]
+        MarvinsApp["marvins app<br/>(agents/capabilities/config)"]
+        SessionsApp["sessions app<br/>(TSession/Thread/Message/ToolCall)"]
+        LLMApp["llm app<br/>(LLMProvider, encrypted keys)"]
+        ChecksApp["checks app<br/>(Check/CheckExecution/HealthState)"]
+        InfraApp["infradesigns app<br/>(InfrastructureDesign)"]
+        WSRouting["WS routing<br/>(/ws/sessions/&lt;id&gt;/)"]
+        WSConsumer["WS consumer"]
+        WSSignals["WS signals"]
+    end
+
+    %% ============================================================
+    %% MCP SERVER
+    %% ============================================================
+    subgraph MCP["MCP Server (:8080)"]
+        direction TB
+        MCPMain["MCP main"]
+        FastMCP["FastMCP(&quot;vogon&quot;)<br/>(http / stdio)"]
+        MCPTools["Tools registry<br/>(find_tools, execute,<br/>request_architecture_design, ...)"]
+        MCPAuth["Auth<br/>(vogon_&lt;slug&gt;_&lt;32hex&gt;)"]
+    end
+
+    %% ============================================================
+    %% TEMPORAL
+    %% ============================================================
+    subgraph TEMPORAL["Temporal (:7233, queue: vogon)"]
+        direction TB
+        TemporalClient["Temporal client"]
+        TroubleshootWF["TroubleshootWorkflow"]
+        ThreadWF["ThreadWorkflow"]
+        CheckWF["CheckWorkflow"]
+        AutonomousWF["AutonomousInvestigationWorkflow"]
+        CapExecWF["CapabilityExecutionWorkflow"]
+        ActExecuteCap["execute_capability"]
+        ActCallLLM["call_llm"]
+        ActExecLLMTool["execute_llm_tool"]
+        ActBuildCtx["build_llm_context"]
+        ActDispatch["dispatch_actions"]
+        ActEvalCheck["evaluate_check"]
+        ActEmbed["generate_capability_embedding"]
+        ChecksScheduler["Checks Scheduler<br/>(Temporal Schedule API)"]
+    end
+
+    %% ============================================================
+    %% gRPC SERVER
+    %% ============================================================
+    subgraph GRPC["gRPC Server (:50051)"]
+        direction TB
+        GRPCMain["gRPC main<br/>(+ Temporal worker)"]
+        MarvinServicer["MarvinServicer"]
+        BiDiStream["Bi-directional stream<br/>Connect(stream AgentMessage)<br/>returns (stream ControlMessage)"]
+        RegHandler["Registration handler"]
+        ConfigPush["Config push<br/>(UpdateConfig)"]
+        StaleCleanup["Stale cleanup"]
+    end
+
+    %% ============================================================
+    %% LLM & EMBEDDINGS
+    %% ============================================================
+    subgraph LLM["LLM & Embeddings"]
+        direction TB
+        LLMRegistry["LLM registry<br/>(per-org providers)"]
+        OpenAICompat["OpenAI-compatible client<br/>(AsyncOpenAI)"]
+        EmbedRegistry["Embedding registry"]
+        EmbedGenerator["Embedding generator"]
+        ToolSpecs["ToolSpec registry<br/>(STANDARD_TOOLS)"]
+        Crypto["crypto / Fernet<br/>(per-org key encryption)"]
+    end
+
+    %% ============================================================
+    %% POSTGRES
+    %% ============================================================
+    subgraph PG["Postgres (:5432, pgvector/pg16)"]
+        direction TB
+        DefaultDB["default DB<br/>(all Django models)"]
+        ChannelsPG["channels_postgres<br/>(Channels layer)"]
+        PgVector["pgvector extension<br/>(Capability.embedding,<br/>InfrastructureDesign.embedding)"]
+    end
+
+    %% ============================================================
+    %% FLOW 1: Agent Registration
+    %% ============================================================
+    MarvinAgent -->|"1. Connect / Register"| BiDiStream
+    BiDiStream -->|"2. AgentMessage"| RegHandler
+    RegHandler -->|"3. upsert Marvin + Capabilities"| MarvinsApp
+    MarvinsApp -->|"4. persist models"| DefaultDB
+    MarvinsApp -->|"5. trigger ACT_EMBED"| ActEmbed
+    ActEmbed -->|"6. generate embedding"| EmbedGenerator
+    EmbedGenerator -->|"7. store vector"| PgVector
+    MarvinsApp -->|"8. assemble config"| ConfigPush
+    ConfigPush -->|"9. UpdateConfig push"| BiDiStream
+    BiDiStream -->|"10. ControlMessage"| MarvinAgent
+
+    %% ============================================================
+    %% FLOW 2: Interactive Troubleshooting
+    %% ============================================================
+    Browser -->|"HTTP request"| ASGI
+    ASGI -->|"route /api/"| DRF
+    DRF -->|"start / signal"| SessionsApp
+    SessionsApp -->|"start TroubleshootWorkflow"| TroubleshootWF
+    TroubleshootWF -->|"build context"| ActBuildCtx
+    ActBuildCtx -->|"call_llm"| ActCallLLM
+    ActCallLLM -->|"resolve provider"| LLMRegistry
+    LLMRegistry -->|"decrypt key"| Crypto
+    LLMRegistry -->|"chat completion"| OpenAICompat
+    OpenAICompat -->|"inference"| Ollama
+    ActCallLLM -->|"execute_llm_tool"| ActExecLLMTool
+    ActExecLLMTool -->|"execute_capability"| ActExecuteCap
+    ActExecuteCap -->|"dispatch over stream"| BiDiStream
+    BiDiStream -->|"capability request"| MarvinAgent
+    MarvinAgent -->|"capability result"| BiDiStream
+    BiDiStream -->|"result"| ActExecuteCap
+    ActExecuteCap -->|"save Message / ToolCall"| SessionsApp
+    SessionsApp -->|"ORM write"| DefaultDB
+    SessionsApp -->|"emit WS signal"| WSSignals
+    WSSignals -->|"broadcast"| WSConsumer
+    WSConsumer -->|"WebSocket push"| Browser
+
+    %% ============================================================
+    %% FLOW 3: MCP Tool Call
+    %% ============================================================
+    MCPClient -->|"tool call"| MCPMain
+    MCPMain -->|"dispatch"| FastMCP
+    FastMCP -->|"invoke tool"| MCPTools
+    MCPTools -->|"authenticate"| MCPAuth
+    MCPAuth -->|"resolve org"| CoreApp
+    CoreApp -->|"query"| DefaultDB
+    MCPTools -->|"find capabilities"| MarvinsApp
+    MarvinsApp -->|"start workflow"| CapExecWF
+    CapExecWF -->|"execute_capability"| ActExecuteCap
+    ActExecuteCap -->|"dispatch over stream"| BiDiStream
+    BiDiStream -->|"capability request"| MarvinAgent
+    MarvinAgent -->|"capability result"| BiDiStream
+    BiDiStream -->|"result"| ActExecuteCap
+    ActExecuteCap -->|"save ToolCall"| SessionsApp
+    SessionsApp -->|"ORM write"| DefaultDB
+    MCPTools -->|"return result"| MCPClient
+
+    %% ============================================================
+    %% FLOW 4: Scheduled Checks
+    %% ============================================================
+    ChecksScheduler -->|"trigger schedule"| CheckWF
+    ChecksScheduler -->|"trigger investigation"| AutonomousWF
+    CheckWF -->|"evaluate_check"| ActEvalCheck
+    CheckWF -->|"call_llm"| ActCallLLM
+    CheckWF -->|"execute_capability"| ActExecuteCap
+    ActExecuteCap -->|"dispatch over stream"| BiDiStream
+    BiDiStream -->|"capability request"| MarvinAgent
+    CheckWF -->|"dispatch_actions"| ActDispatch
+    ActDispatch -->|"notify"| Teams
+    ActDispatch -->|"notify"| Email
+    ActDispatch -->|"notify"| Webhook
+    ActDispatch -->|"notify"| Alertmanager
+    CheckWF -->|"save CheckExecution"| ChecksApp
+    ChecksApp -->|"ORM write"| DefaultDB
+
+    %% ============================================================
+    %% FLOW 5: Prometheus Integration
+    %% ============================================================
+    Prometheus -->|"fire alerts"| Alertmanager
+    MCPTools -->|"conditional query"| Prometheus
+    ActExecLLMTool -->|"conditional query"| Prometheus
+
+    %% ============================================================
+    %% FLOW 6: Architecture Design
+    %% ============================================================
+    MCPTools -->|"request_architecture_design"| InfraApp
+    InfraApp -->|"store design"| DefaultDB
+    InfraApp -->|"generate embedding"| EmbedGenerator
+    EmbedGenerator -->|"store vector"| PgVector
+    InfraApp -->|"vector search"| PgVector
+
+    %% ============================================================
+    %% FLOW 7: Config Live Push
+    %% ============================================================
+    MarvinsApp -->|"config change signal"| ConfigPush
+    ConfigPush -->|"UpdateConfig"| BiDiStream
+    BiDiStream -->|"push to all connected agents"| MarvinAgent
+
+    %% ============================================================
+    %% CROSS-CUTTING INFRASTRUCTURE
+    %% ============================================================
+    CoreApp -->|"ORM"| DefaultDB
+    MarvinsApp -->|"ORM"| DefaultDB
+    LLMApp -->|"ORM"| DefaultDB
+    InfraApp -->|"ORM"| DefaultDB
+    WSConsumer -->|"channel layer"| ChannelsPG
+    WSSignals -->|"channel layer"| ChannelsPG
+    GRPCMain -->|"register worker"| TemporalClient
+    TemporalClient -->|"poll task queue"| TroubleshootWF
+    TemporalClient -->|"poll task queue"| CapExecWF
+    GRPCMain -->|"serve"| MarvinServicer
+    MarvinServicer -->|"handle stream"| BiDiStream
+    MarvinServicer -->|"register"| RegHandler
+    MarvinServicer -->|"push config"| ConfigPush
+    MarvinServicer -->|"reap stale"| StaleCleanup
+    StaleCleanup -->|"mark offline"| MarvinsApp
+    ASGI -->|"route /ws/"| WSRouting
+    WSRouting -->|"dispatch"| WSConsumer
+    DRF -->|"auth"| Allauth
+    Admin -->|"manage"| CoreApp
+    LLMApp -->|"resolve provider"| LLMRegistry
+    LLMRegistry -->|"encrypt/decrypt"| Crypto
+    ActCallLLM -->|"tool specs"| ToolSpecs
+    ActExecLLMTool -->|"tool specs"| ToolSpecs
+    EmbedRegistry -->|"generate"| EmbedGenerator
+    ThreadWF -->|"call_llm"| ActCallLLM
+    AutonomousWF -->|"execute_capability"| ActExecuteCap
+    AutonomousWF -->|"call_llm"| ActCallLLM
+
+    %% ============================================================
+    %% STYLING
+    %% ============================================================
+    classDef external fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef django fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
+    classDef mcp fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#e65100
+    classDef temporal fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px,color:#4a148c
+    classDef grpc fill:#fce4ec,stroke:#ad1457,stroke-width:2px,color:#880e4f
+    classDef llm fill:#e0f7fa,stroke:#00838f,stroke-width:2px,color:#006064
+    classDef postgres fill:#eceff1,stroke:#37474f,stroke-width:2px,color:#263238
+
+    class Browser,MCPClient,MarvinAgent,Prometheus,Alertmanager,Teams,Email,Webhook,Ollama external
+    class ASGI,DRF,Admin,Allauth,CoreApp,MarvinsApp,SessionsApp,LLMApp,ChecksApp,InfraApp,WSRouting,WSConsumer,WSSignals django
+    class MCPMain,FastMCP,MCPTools,MCPAuth mcp
+    class TemporalClient,TroubleshootWF,ThreadWF,CheckWF,AutonomousWF,CapExecWF,ActExecuteCap,ActCallLLM,ActExecLLMTool,ActBuildCtx,ActDispatch,ActEvalCheck,ActEmbed,ChecksScheduler temporal
+    class GRPCMain,MarvinServicer,BiDiStream,RegHandler,ConfigPush,StaleCleanup grpc
+    class LLMRegistry,OpenAICompat,EmbedRegistry,EmbedGenerator,ToolSpecs,Crypto llm
+    class DefaultDB,ChannelsPG,PgVector postgres
