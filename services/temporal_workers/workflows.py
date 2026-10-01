@@ -586,9 +586,15 @@ class CheckWorkflow:
         self.state["mode"] = context.get("execution_mode", "deterministic")
         self.state.update(context)
 
+        if context.get("error"):
+            self.state["status"] = "failed"
+            self.state["last_failure_reason"] = "check_not_found"
+            self.state["last_failure_detail"] = context["error"]
+            return self.state
+
         execution = await workflow.execute_activity(
             "update_check_execution",
-            args=[None, "running", "unknown", {}],
+            args=[check_id, None, "running", "unknown", {}],
             start_to_close_timeout=timedelta(seconds=30),
         )
         self.state["execution_id"] = execution.get("id")
@@ -674,6 +680,7 @@ class CheckWorkflow:
         await workflow.execute_activity(
             "update_check_execution",
             args=[
+                check_id,
                 self.state["execution_id"],
                 "completed",
                 evaluation.get("state", "unknown"),
@@ -791,9 +798,15 @@ class AutonomousInvestigationWorkflow:
         )
         self.state.update(context)
 
+        if context.get("error"):
+            self.state["status"] = "failed"
+            self.state["last_failure_reason"] = "check_not_found"
+            self.state["last_failure_detail"] = context["error"]
+            return self.state
+
         execution = await workflow.execute_activity(
             "update_check_execution",
-            args=[None, "running", "unknown", {}],
+            args=[check_id, None, "running", "unknown", {}],
             start_to_close_timeout=timedelta(seconds=30),
         )
         self.state["execution_id"] = execution.get("id")
@@ -927,6 +940,7 @@ class AutonomousInvestigationWorkflow:
         await workflow.execute_activity(
             "update_check_execution",
             args=[
+                check_id,
                 self.state["execution_id"],
                 "completed",
                 evaluation["state"],

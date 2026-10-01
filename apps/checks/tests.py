@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import uuid
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -1604,3 +1605,138 @@ class CallLLMNoThreadTests(TransactionTestCase):
 
         self.assertEqual(result["content"], "ok")
         mock_get_client.assert_called_once_with(str(organization.id), None)
+
+
+class CheckSchedulerResilienceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="res_user", password="pass")
+        self.organization = Organization.objects.create(name="Res Org", slug="res-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def test_load_check_context_returns_error_sentinel_when_missing(self):
+        from services.temporal_workers.activities import load_check_context
+
+        fake_id = str(uuid.uuid4())
+        result = asyncio.run(load_check_context(fake_id, ""))
+        self.assertEqual(result["error"], "Check not found")
+        self.assertEqual(result["check_id"], fake_id)
+
+    def test_update_check_execution_creates_when_execution_id_is_none(self):
+        from services.temporal_workers.activities import update_check_execution
+
+        check = _make_check(self.organization, name="No Exec Check")
+        result = asyncio.run(
+            update_check_execution(
+                check_id=str(check.id),
+                execution_id=None,
+                status="completed",
+                health_state="healthy",
+                result={"ok": True},
+            )
+        )
+        self.assertIn("id", result)
+        self.assertTrue(
+            CheckExecution.objects.filter(
+                check=check,
+                execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            ).exists()
+        )
+
+    @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
+    def test_create_schedule_skips_disabled_checks(self, mock_get_client):
+        from services.checks.scheduler import CheckScheduler
+
+        check = _make_check(self.organization, name="Disabled Check", enabled=False)
+        result = asyncio.run(CheckScheduler.create_schedule(check))
+        self.assertEqual(result, {"schedule_id": None, "status": "skipped_disabled"})
+        mock_get_client.assert_not_called()
+
+    @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
+    def test_update_schedule_pauses_when_disabled_and_running(self, mock_get_client):
+        from services.checks.scheduler import CheckScheduler
+
+        check = _make_check(self.organization, name="Disable Pause", enabled=False)
+        mock_handle = AsyncMock()
+        mock_desc = MagicMock()
+        mock_desc.schedule.state.paused = False
+        mock_handle.describe.return_value = mock_desc
+        mock_client = AsyncMock()
+        mock_client.get_schedule_handle.return_value = mock_handle
+        mock_get_client.return_value = mock_client
+
+        result = asyncio.run(CheckScheduler.update_schedule(check))
+        self.assertEqual(result["status"], "paused")
+        mock_handle.pause.assert_awaited_once()
+
+    @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
+    def test_update_schedule_resumes_when_enabled_and_paused(self, mock_get_client):
+        from services.checks.scheduler import CheckScheduler
+
+        check = _make_check(self.organization, name="Enable Resume", enabled=True)
+        mock_handle = AsyncMock()
+        mock_desc = MagicMock()
+        mock_desc.schedule.state.paused = True
+        mock_handle.describe.return_value = mock_desc
+        mock_client = AsyncMock()
+        mock_client.get_schedule_handle.return_value = mock_handle
+        mock_get_client.return_value = mock_client
+
+        result = asyncio.run(CheckScheduler.update_schedule(check))
+        self.assertEqual(result["status"], "resumed")
+        mock_handle.unpause.assert_awaited_once()
+
+    @patch("services.checks.scheduler.CheckScheduler.create_schedule", new_callable=AsyncMock)
+    def test_check_create_view_calls_scheduler(self, mock_create):
+        mock_create.return_value = {"schedule_id": "ui-test", "status": "created"}
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "UI Create Scheduler",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_create.assert_called_once()
+
+    @patch("services.checks.scheduler.CheckScheduler.update_schedule", new_callable=AsyncMock)
+    def test_check_edit_view_calls_scheduler(self, mock_update):
+        check = _make_check(self.organization, name="UI Edit Scheduler")
+        mock_update.return_value = {"status": "updated"}
+        response = self.client.post(
+            f"/checks/{check.id}/edit/",
+            {
+                "name": "UI Edit Scheduler Updated",
+                "schedule_type": check.schedule_type,
+                "schedule_expression": check.schedule_expression,
+                "execution_mode": check.execution_mode,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_update.assert_called_once()
+
+    @patch("services.checks.scheduler.CheckScheduler.pause_schedule", new_callable=AsyncMock)
+    def test_check_toggle_view_calls_pause_when_disabling(self, mock_pause):
+        check = _make_check(self.organization, name="UI Toggle Disable", enabled=True)
+        mock_pause.return_value = {"status": "paused"}
+        response = self.client.post(f"/checks/{check.id}/toggle/")
+        self.assertEqual(response.status_code, 200)
+        check.refresh_from_db()
+        self.assertFalse(check.enabled)
+        mock_pause.assert_called_once_with(str(check.id))
+
+    @patch("services.checks.scheduler.CheckScheduler.resume_schedule", new_callable=AsyncMock)
+    def test_check_toggle_view_calls_resume_when_enabling(self, mock_resume):
+        check = _make_check(self.organization, name="UI Toggle Enable", enabled=False)
+        mock_resume.return_value = {"status": "resumed"}
+        response = self.client.post(f"/checks/{check.id}/toggle/")
+        self.assertEqual(response.status_code, 200)
+        check.refresh_from_db()
+        self.assertTrue(check.enabled)
+        mock_resume.assert_called_once_with(str(check.id))

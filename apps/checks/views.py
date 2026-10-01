@@ -90,6 +90,14 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             notification_config=notification_config,
             created_by=request.user,
         )
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            asyncio.run(CheckScheduler.create_schedule(check))
+        except Exception:
+            pass  # Temporal may be offline; never fail the request
         CheckVersion.objects.create(check=check, version_number=1, definition_snapshot={})
         return HttpResponseRedirect(reverse("checks:check-detail", kwargs={"check_id": check.id}))
 
@@ -141,6 +149,14 @@ class CheckEditView(OrganizationRequiredMixin, View):
         check.evaluation_config = evaluation_config
         check.notification_config = notification_config
         check.save()
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            asyncio.run(CheckScheduler.update_schedule(check))
+        except Exception:
+            pass  # Temporal may be offline; never fail the request
         CheckVersion.objects.create(
             check=check,
             version_number=(CheckVersion.objects.filter(check=check).count() + 1),
@@ -160,6 +176,17 @@ class CheckToggleView(OrganizationRequiredMixin, View):
         check = get_object_or_404(Check, id=check_id, organization=self.organization)
         check.enabled = not check.enabled
         check.save()
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            if check.enabled:
+                asyncio.run(CheckScheduler.resume_schedule(str(check.id)))
+            else:
+                asyncio.run(CheckScheduler.pause_schedule(str(check.id)))
+        except Exception:
+            pass  # Temporal may be offline; never fail the request
         hx_target = request.META.get("HTTP_HX_TARGET", "")
         if hx_target == "detail-actions" or hx_target.startswith("#detail-actions"):
             return render(request, "checks/_check_detail_actions.html", {"check": check})

@@ -1007,11 +1007,14 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
     _setup_django_models()
     from apps.checks.models import Check, CheckVersion
 
-    check = await sync_to_async(
-        Check.objects.select_related(
-            "organization", "llm_provider", "target_scope", "created_by"
-        ).get
-    )(id=check_id)
+    try:
+        check = await sync_to_async(
+            Check.objects.select_related(
+                "organization", "llm_provider", "target_scope", "created_by"
+            ).get
+        )(id=check_id)
+    except Check.DoesNotExist:
+        return {"error": "Check not found", "check_id": check_id}
 
     version = None
     if version_id:
@@ -1067,6 +1070,7 @@ async def evaluate_check(check_id: str, execution_result: dict, rules: list[dict
 
 @activity.defn
 async def update_check_execution(
+    check_id: str,
     execution_id: str | None,
     status: str,
     health_state: str,
@@ -1074,7 +1078,7 @@ async def update_check_execution(
 ) -> dict:
     """Update or create a CheckExecution record."""
     _setup_django_models()
-    from apps.checks.models import CheckExecution
+    from apps.checks.models import Check, CheckExecution
 
     if execution_id:
         try:
@@ -1095,14 +1099,31 @@ async def update_check_execution(
         except CheckExecution.DoesNotExist:
             pass
 
-    # If no execution_id or not found, we can't create without a check
-    # The workflow should have created it already via a separate call
-    return {
-        "id": execution_id,
-        "status": status,
-        "health_state": health_state,
-        "error": "Execution not found",
-    }
+    try:
+        check = await sync_to_async(Check.objects.get)(id=check_id)
+    except Check.DoesNotExist:
+        return {
+            "id": execution_id,
+            "status": status,
+            "health_state": health_state,
+            "error": "Check not found",
+        }
+
+    execution = await sync_to_async(CheckExecution.objects.create)(
+        check=check,
+        execution_status=getattr(
+            CheckExecution.ExecutionStatus,
+            status.upper(),
+            CheckExecution.ExecutionStatus.PENDING,
+        ),
+        health_state=getattr(
+            CheckExecution.HealthState,
+            health_state.upper(),
+            CheckExecution.HealthState.UNKNOWN,
+        ),
+        evaluation_result=result,
+    )
+    return {"id": str(execution.id), "status": status, "health_state": health_state}
 
 
 @activity.defn

@@ -38,6 +38,9 @@ class CheckScheduler:
 
     @classmethod
     async def create_schedule(cls, check) -> dict:
+        if not check.enabled:
+            return {"schedule_id": None, "status": "skipped_disabled"}
+
         client: Client = await get_temporal_client()
         schedule_id = cls._schedule_id(str(check.id))
 
@@ -51,11 +54,23 @@ class CheckScheduler:
 
         try:
             handle = client.get_schedule_handle(schedule_id)
+            description = await handle.describe()
+
+            if not check.enabled and not description.schedule.state.paused:
+                await handle.pause()
+                return {"schedule_id": schedule_id, "status": "paused"}
+
+            if check.enabled and description.schedule.state.paused:
+                await handle.unpause()
+                return {"schedule_id": schedule_id, "status": "resumed"}
+
             schedule = cls._build_schedule(check)
             await handle.update(lambda _input: ScheduleUpdate(schedule=schedule))
             return {"schedule_id": schedule_id, "status": "updated"}
         except Exception:
-            return await cls.create_schedule(check)
+            if check.enabled:
+                return await cls.create_schedule(check)
+            return {"schedule_id": None, "status": "skipped_disabled"}
 
     @classmethod
     async def pause_schedule(cls, check_id: str) -> dict:
