@@ -5,6 +5,7 @@ from apps.checks.views import (
     CheckDetailView,
     CheckDryRunView,
     CheckEditView,
+    CheckExecutionDetailView,
     CheckListView,
     CheckToggleView,
     CheckTriggerView,
@@ -19,5 +20,10 @@ urlpatterns = [
     path("<uuid:check_id>/toggle/", CheckToggleView.as_view(), name="check-toggle"),
     path("<uuid:check_id>/trigger/", CheckTriggerView.as_view(), name="check-trigger"),
     path("<uuid:check_id>/dry-run/", CheckDryRunView.as_view(), name="check-dry-run"),
+    path(
+        "<uuid:check_id>/executions/<uuid:execution_id>/",
+        CheckExecutionDetailView.as_view(),
+        name="check-execution-detail",
+    ),
     path("new/", CheckCreateView.as_view(), name="check-create"),
 ]

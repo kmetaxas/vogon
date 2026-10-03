@@ -11,6 +11,7 @@ from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 MAX_PARALLEL_TOOL_CALLS = 6
 
@@ -587,10 +588,7 @@ class CheckWorkflow:
         self.state.update(context)
 
         if context.get("error"):
-            self.state["status"] = "failed"
-            self.state["last_failure_reason"] = "check_not_found"
-            self.state["last_failure_detail"] = context["error"]
-            return self.state
+            raise ApplicationError(f"Check not found: {context['error']}")
 
         execution = await workflow.execute_activity(
             "update_check_execution",
@@ -804,10 +802,7 @@ class AutonomousInvestigationWorkflow:
         self.state.update(context)
 
         if context.get("error"):
-            self.state["status"] = "failed"
-            self.state["last_failure_reason"] = "check_not_found"
-            self.state["last_failure_detail"] = context["error"]
-            return self.state
+            raise ApplicationError(f"Check not found: {context['error']}")
 
         execution = await workflow.execute_activity(
             "update_check_execution",

@@ -235,3 +235,14 @@ class CheckDryRunView(OrganizationRequiredMixin, View):
                 "checks/_action_result.html",
                 {"check": check, "message": f"Error: {exc}", "error": True},
             )
+
+
+class CheckExecutionDetailView(OrganizationRequiredMixin, View):
+    def get(self, request, check_id, execution_id):
+        check = get_object_or_404(Check, id=check_id, organization=self.organization)
+        execution = get_object_or_404(CheckExecution, id=execution_id, check=check)
+        context = {
+            "check": check,
+            "execution": execution,
+        }
+        return render(request, "checks/check_execution_detail.html", context)
