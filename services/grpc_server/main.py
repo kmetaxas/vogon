@@ -14,6 +14,7 @@ from services.temporal_workers.activities import (
     call_llm,
     check_completion,
     create_assistant_message,
+    create_autonomous_session,
     create_tool_call_messages,
     dispatch_actions,
     evaluate_check,
@@ -108,6 +109,7 @@ async def run_grpc_and_temporal():
         activities=[
             build_llm_context,
             call_llm,
+            create_autonomous_session,
             create_tool_call_messages,
             dispatch_actions,
             evaluate_check,
