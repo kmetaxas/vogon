@@ -1145,6 +1145,107 @@ async def update_check_execution(
 
 
 @activity.defn
+async def create_autonomous_session(check_id: str, execution_id: str) -> dict:
+    return await sync_to_async(_create_autonomous_session)(check_id, execution_id)
+
+
+def _create_autonomous_session(check_id: str, execution_id: str) -> dict:
+    _setup_django_models()
+
+    from django.db import transaction
+
+    from apps.checks.models import CheckExecution
+    from apps.sessions.models import Message, Thread, TSession
+
+    try:
+        with transaction.atomic():
+            execution = (
+                CheckExecution.objects.select_for_update()
+                .select_related(
+                    "check",
+                    "check__organization",
+                    "check__target_scope",
+                    "check__llm_provider",
+                    "check__created_by",
+                )
+                .get(id=execution_id, check_id=check_id)
+            )
+
+            evaluation_result = execution.evaluation_result or {}
+            session_id = evaluation_result.get("autonomous_session_id")
+            thread_id = evaluation_result.get("autonomous_thread_id")
+            if session_id and thread_id:
+                return {"session_id": str(session_id), "thread_id": str(thread_id)}
+
+            check = execution.check
+            initial_content = (
+                check.instructions or check.description or "Investigate and report findings"
+            )
+            if session_id:
+                session = TSession.objects.get(id=session_id)
+                thread = Thread.objects.filter(
+                    tsession=session,
+                    title="Autonomous Investigation",
+                ).first()
+                if thread is None:
+                    thread = Thread.objects.create(
+                        tsession=session,
+                        title="Autonomous Investigation",
+                        user=None,
+                        status=Thread.Status.ACTIVE,
+                    )
+                    Message.objects.create(
+                        thread=thread,
+                        role=Message.Role.USER,
+                        content=initial_content,
+                    )
+
+                evaluation_result["autonomous_thread_id"] = str(thread.id)
+                execution.evaluation_result = evaluation_result
+                execution.save(update_fields=["evaluation_result"])
+                return {"session_id": str(session.id), "thread_id": str(thread.id)}
+
+            session = TSession.objects.create(
+                organization=check.organization,
+                title=f"Autonomous Check: {check.name}",
+                status=TSession.Status.ACTIVE,
+                is_autonomous=True,
+                target_scope=check.target_scope,
+                execution_budget=check.execution_budget or {},
+                llm_provider=check.llm_provider,
+                created_by=check.created_by,
+            )
+            thread = Thread.objects.create(
+                tsession=session,
+                title="Autonomous Investigation",
+                user=None,
+                status=Thread.Status.ACTIVE,
+            )
+            Message.objects.create(
+                thread=thread,
+                role=Message.Role.USER,
+                content=initial_content,
+            )
+
+            evaluation_result.update(
+                {
+                    "autonomous_session_id": str(session.id),
+                    "autonomous_thread_id": str(thread.id),
+                }
+            )
+            execution.evaluation_result = evaluation_result
+            execution.save(update_fields=["evaluation_result"])
+
+            return {"session_id": str(session.id), "thread_id": str(thread.id)}
+    except CheckExecution.DoesNotExist:
+        return {
+            "error": "CheckExecution not found",
+            "check_id": check_id,
+            "execution_id": execution_id,
+        }
+
+
+@activity.defn
 async def dispatch_actions(
     check_id: str,
     execution_id: str,

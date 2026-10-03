@@ -127,7 +127,9 @@ def _events_to_progress(events, active=False):
         "created_at": (
             events[-1]["created_at"].isoformat()
             if events and hasattr(events[-1]["created_at"], "isoformat")
-            else events[-1]["created_at"] if events else ""
+            else events[-1]["created_at"]
+            if events
+            else ""
         ),
     }
 
@@ -344,6 +346,7 @@ class SessionListView(OrganizationRequiredMixin, View):
     def get(self, request):
         sessions = TSession.objects.filter(
             organization=self.organization,
+            is_autonomous=False,
         )
         context = {
             "sessions": sessions,

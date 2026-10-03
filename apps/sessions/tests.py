@@ -691,35 +691,63 @@ class CheckWorkflowTests(SimpleTestCase):
 
 
 class AutonomousInvestigationWorkflowTests(SimpleTestCase):
-    def test_run_executes_capabilities_and_returns_structured_evaluation(self):
+    def _check_context(self, **overrides):
+        context = {
+            "check_name": "API Health",
+            "investigation_goal": "Verify API health and gather evidence before deciding state",
+            "instructions": "Use metrics first, then return the final JSON evaluation.",
+            "execution_budget": {"max_iterations": 4},
+            "llm_provider_id": "provider-auto-1",
+            "organization_id": "org-auto-1",
+            "evaluation_config": {},
+            "version_snapshot": {"version": "v1"},
+            "target_scope_id": "scope-1",
+        }
+        context.update(overrides)
+        return context
+
+    def _tool_call(self):
+        return {
+            "id": "tool-call-1",
+            "name": "query_prometheus",
+            "arguments": {"query": "up"},
+        }
+
+    def test_run_executes_tools_and_returns_structured_evaluation(self):
         workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = self._tool_call()
+        tool_result = {"status": "up", "value": 1}
         execute_activity = AsyncMock(
             side_effect=[
-                {
-                    "check_name": "API Health",
-                    "investigation_goal": "Verify API health",
-                    "llm_provider_id": "provider-auto-1",
-                    "organization_id": "org-auto-1",
-                    "evaluation_config": {
-                        "capabilities": [
-                            {
-                                "name": "query_prometheus",
-                                "parameters": {"query": "up"},
-                                "marvin_id": "marvin-1",
-                            }
-                        ]
-                    },
-                },
+                self._check_context(),
                 {"id": "execution-1"},
-                {"status": "up"},
+                {"session_id": "session-1", "thread_id": "thread-1"},
+                None,
+                {
+                    "content": "Need current metric evidence.",
+                    "tool_calls": [tool_call],
+                    "reasoning": "Check the up metric before evaluating.",
+                    "input_tokens": 7,
+                    "output_tokens": 5,
+                    "cost": "0.02",
+                },
+                None,
+                None,
+                None,
+                {"db_tool_call_id": "db-tool-1", "result": tool_result},
+                None,
+                {"messages_created": True},
+                None,
+                None,
                 {
                     "content": '{"state":"healthy","confidence":0.9,"findings":[],"summary":"OK"}',
                     "tool_calls": [],
-                    "input_tokens": 7,
-                    "output_tokens": 3,
+                    "input_tokens": 11,
+                    "output_tokens": 4,
                     "cost": "0.03",
                 },
                 {"id": "execution-1"},
+                {"session_id": "session-1", "status": "completed"},
                 {"dispatched": True},
             ]
         )
@@ -735,38 +763,92 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["execution_id"], "execution-1")
-        self.assertEqual(result["iteration_count"], 0)
-        self.assertEqual(result["cumulative_tokens"], 10)
-        self.assertEqual(result["cumulative_cost"], "0.03")
+        self.assertEqual(result["session_id"], "session-1")
+        self.assertEqual(result["thread_id"], "thread-1")
+        self.assertEqual(result["iteration_count"], 1)
+        self.assertEqual(result["cumulative_tokens"], 27)
+        self.assertEqual(result["cumulative_cost"], "0.05")
         self.assertEqual(result["evaluation"]["state"], "healthy")
-        self.assertEqual(result["capability_results"][0]["result"]["status"], "up")
+        self.assertNotIn("capability_results", result)
+        self.assertEqual(result["investigation_results"][0]["iteration"], 0)
+        self.assertEqual(result["investigation_results"][0]["tool_calls"][0]["result"], tool_result)
         names = [call.args[0] for call in execute_activity.await_args_list]
-        self.assertEqual(names.count("call_llm"), 1)
-        for call in execute_activity.await_args_list:
-            if call.args[0] == "call_llm":
-                self.assertEqual(call.kwargs["args"][2], "provider-auto-1")
-                self.assertEqual(call.kwargs["args"][3], "org-auto-1")
-                self.assertIn("structured assessment", call.kwargs["args"][1][0]["content"])
-                self.assertIn("query_prometheus", call.kwargs["args"][1][1]["content"])
-        self.assertNotIn("execute_llm_tool", names)
-        self.assertIn("execute_capability", names)
         self.assertEqual(
-            execute_activity.await_args_list[names.index("execute_capability")].kwargs["args"],
-            ["check-1", "execution-1", "query_prometheus", {"query": "up"}, "marvin-1"],
+            names[:3], ["load_check_context", "update_check_execution", "create_autonomous_session"]
         )
-        self.assertEqual(names[-1], "dispatch_actions")
+        self.assertEqual(names.count("call_llm"), 2)
+        self.assertIn("execute_llm_tool", names)
+        self.assertNotIn("execute_capability", names)
+        self.assertIn("create_tool_call_messages", names)
+        self.assertEqual(names[-2:], ["set_session_status", "dispatch_actions"])
+        call_llm_calls = [
+            call for call in execute_activity.await_args_list if call.args[0] == "call_llm"
+        ]
+        self.assertEqual(call_llm_calls[0].kwargs["args"][0], "thread-1")
+        self.assertEqual(call_llm_calls[0].kwargs["args"][2], "provider-auto-1")
+        self.assertIn("Verify API health", call_llm_calls[0].kwargs["args"][1][0]["content"])
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("execute_llm_tool")].kwargs["args"],
+            ["thread-1", tool_call, None],
+        )
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("create_tool_call_messages")].kwargs[
+                "args"
+            ],
+            ["thread-1", tool_call, tool_result, "db-tool-1"],
+        )
+        event_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "record_agent_event"
+        ]
+        self.assertIn("thinking", [call.kwargs["args"][1] for call in event_calls])
+        self.assertIn("tool_call_started", [call.kwargs["args"][1] for call in event_calls])
+        self.assertIn("tool_result", [call.kwargs["args"][1] for call in event_calls])
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        self.assertEqual(update_calls[-1].kwargs["args"][2], "completed")
+        self.assertEqual(
+            update_calls[-1].kwargs["args"][4]["investigation_results"],
+            result["investigation_results"],
+        )
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("set_session_status")].kwargs["args"],
+            ["session-1", "completed"],
+        )
 
-    def test_run_ignores_max_iterations_and_skips_actions_for_dry_run(self):
+    def test_run_marks_max_iterations_and_skips_actions_for_dry_run(self):
         workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = self._tool_call()
         execute_activity = AsyncMock(
             side_effect=[
-                {"check_name": "Disk", "investigation_goal": "Check disk"},
+                self._check_context(
+                    check_name="Disk",
+                    investigation_goal="Check disk saturation",
+                    instructions="Inspect disk metrics before deciding.",
+                    execution_budget={"max_iterations": 3},
+                ),
                 {"id": "execution-2"},
+                {"session_id": "session-2", "thread_id": "thread-2"},
+                None,
                 {
-                    "content": "Critical: disk evidence is insufficient",
-                    "tool_calls": [],
+                    "content": "Need disk evidence.",
+                    "tool_calls": [tool_call],
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "cost": "0.01",
                 },
+                None,
+                None,
+                {"db_tool_call_id": "db-tool-2", "result": {"usage": "99%"}},
+                None,
+                {"messages_created": True},
+                None,
                 {"id": "execution-2"},
+                {"session_id": "session-2", "status": "completed"},
             ]
         )
 
@@ -782,12 +864,110 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             )
 
         self.assertEqual(result["status"], "completed")
-        self.assertIsNone(result["last_failure_reason"])
-        self.assertEqual(result["evaluation"]["state"], "critical")
+        self.assertEqual(result["last_failure_reason"], "limit")
+        self.assertEqual(result["last_failure_detail"], "Maximum tool-call iterations reached")
+        self.assertEqual(result["iteration_count"], 0)
+        self.assertEqual(result["evaluation"]["state"], "unknown")
+        self.assertEqual(
+            result["investigation_results"][0]["tool_calls"][0]["result"], {"usage": "99%"}
+        )
         names = [call.args[0] for call in execute_activity.await_args_list]
         self.assertEqual(names.count("call_llm"), 1)
-        self.assertNotIn("execute_llm_tool", names)
+        self.assertIn("execute_llm_tool", names)
         self.assertNotIn("dispatch_actions", names)
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("set_session_status")].kwargs["args"],
+            ["session-2", "completed"],
+        )
+
+    def test_run_marks_session_failed_on_exception(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        execute_activity = AsyncMock(
+            side_effect=[
+                self._check_context(),
+                {"id": "execution-3"},
+                {"session_id": "session-3", "thread_id": "thread-3"},
+                None,
+                RuntimeError("LLM offline"),
+                {"id": "execution-3"},
+                {"session_id": "session-3", "status": "failed"},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(workflow_instance.run("check-3", "version-3"))
+
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        self.assertEqual(
+            update_calls[-1].kwargs["args"],
+            ["check-3", "execution-3", "failed", "unknown", {"error": "LLM offline"}],
+        )
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("set_session_status")].kwargs["args"],
+            ["session-3", "failed"],
+        )
+
+    def test_run_calls_create_autonomous_session(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        execute_activity = AsyncMock(
+            side_effect=[
+                self._check_context(
+                    check_name="Certificate", investigation_goal="Inspect TLS expiry"
+                ),
+                {"id": "execution-4"},
+                {"session_id": "session-4", "thread_id": "thread-4"},
+                None,
+                {
+                    "content": (
+                        '{"state":"healthy","confidence":0.8,"findings":[],'
+                        '"summary":"TLS is valid"}'
+                    ),
+                    "tool_calls": [],
+                    "input_tokens": 6,
+                    "output_tokens": 4,
+                    "cost": "0.02",
+                },
+                {"id": "execution-4"},
+                {"session_id": "session-4", "status": "completed"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-4", "version-4"))
+
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(
+            names[:3], ["load_check_context", "update_check_execution", "create_autonomous_session"]
+        )
+        self.assertEqual(
+            execute_activity.await_args_list[names.index("create_autonomous_session")].kwargs[
+                "args"
+            ],
+            ["check-4", "execution-4"],
+        )
+        call_llm_args = execute_activity.await_args_list[names.index("call_llm")].kwargs["args"]
+        self.assertEqual(call_llm_args[0], "thread-4")
+        self.assertEqual(result["session_id"], "session-4")
+        self.assertEqual(result["thread_id"], "thread-4")
 
     def test_parse_evaluation_accepts_markdown_json_and_fallback_text(self):
         workflow_instance = AutonomousInvestigationWorkflow()

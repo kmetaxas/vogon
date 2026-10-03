@@ -60,6 +60,10 @@ class TSession(models.Model):
         related_name="tsessions",
         help_text="Optional LLM provider override for this session. Falls back to org default.",
     )
+    is_autonomous = models.BooleanField(
+        default=False,
+        help_text="Autonomous sessions are hidden from default session views.",
+    )
     total_input_tokens = models.PositiveIntegerField(default=0)
     total_output_tokens = models.PositiveIntegerField(default=0)
     total_tokens = models.PositiveIntegerField(default=0)
@@ -80,6 +84,7 @@ class TSession(models.Model):
         return cls.objects.filter(
             organization__in=user.organizations.all(),
             status__in=[cls.Status.PENDING, cls.Status.ACTIVE, cls.Status.PAUSED],
+            is_autonomous=False,
         )
 
     @classmethod
@@ -90,6 +95,7 @@ class TSession(models.Model):
         return cls.objects.filter(
             organization__in=user.organizations.all(),
             status__in=[cls.Status.COMPLETED, cls.Status.FAILED],
+            is_autonomous=False,
         )
 
     def can_view(self, user):
