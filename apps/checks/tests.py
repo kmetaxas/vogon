@@ -1740,3 +1740,23 @@ class CheckSchedulerResilienceTests(TestCase):
         check.refresh_from_db()
         self.assertTrue(check.enabled)
         mock_resume.assert_called_once_with(str(check.id))
+
+    def test_check_execution_detail_view(self):
+        check = _make_check(self.organization, name="Exec Detail Check")
+        execution = CheckExecution.objects.create(
+            check=check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+            evaluation_result={"summary": "All good", "confidence": 0.95, "findings": []},
+        )
+        response = self.client.get(f"/checks/{check.id}/executions/{execution.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "All good")
+        self.assertContains(response, "Execution Detail")
+
+    def test_check_execution_detail_view_404_for_other_org(self):
+        other_org = Organization.objects.create(name="Other Org", slug="other-org")
+        other_check = _make_check(other_org, name="Other Check")
+        execution = CheckExecution.objects.create(check=other_check)
+        response = self.client.get(f"/checks/{other_check.id}/executions/{execution.id}/")
+        self.assertEqual(response.status_code, 404)
