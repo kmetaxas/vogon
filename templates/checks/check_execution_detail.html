@@ -78,9 +78,9 @@
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Confidence</div>
                 <div style="margin-top:var(--spacing-sm); display:flex; align-items:center; gap:var(--spacing-sm);">
                     <div style="flex:1; height:8px; background:var(--color-border); border-radius:4px; overflow:hidden;">
-                        <div style="width:{{ execution.evaluation_result.confidence }}%; height:100%; background:{% if execution.evaluation_result.confidence >= 80 %}var(--color-success, #16a34a){% elif execution.evaluation_result.confidence >= 50 %}var(--color-warning, #ca8a04){% else %}var(--color-danger, #dc2626){% endif %}; border-radius:4px;"></div>
+                        <div style="width:{% widthratio execution.evaluation_result.confidence 1 100 %}%; height:100%; background:{% if execution.evaluation_result.confidence >= 0.8 %}var(--color-success, #16a34a){% elif execution.evaluation_result.confidence >= 0.5 %}var(--color-warning, #ca8a04){% else %}var(--color-danger, #dc2626){% endif %}; border-radius:4px;"></div>
                     </div>
-                    <span style="font-size:0.875rem; font-weight:600; min-width:3em; text-align:right;">{{ execution.evaluation_result.confidence }}%</span>
+                    <span style="font-size:0.875rem; font-weight:600; min-width:3em; text-align:right;">{% widthratio execution.evaluation_result.confidence 1 100 %}%</span>
                 </div>
             </div>
             {% endif %}

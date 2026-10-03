@@ -6,6 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, cast
 
 import temporalio.activity as activity
@@ -1112,6 +1113,9 @@ async def update_check_execution(
                 CheckExecution.HealthState.UNKNOWN,
             )
             execution.evaluation_result = result
+            execution.input_tokens = result.get("input_tokens", execution.input_tokens)
+            execution.output_tokens = result.get("output_tokens", execution.output_tokens)
+            execution.cost = Decimal(result.get("cost", "0.00"))
             await sync_to_async(execution.save)()
             return {"id": str(execution.id), "status": status, "health_state": health_state}
         except CheckExecution.DoesNotExist:
