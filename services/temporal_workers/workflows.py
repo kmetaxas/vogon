@@ -661,7 +661,12 @@ class CheckWorkflow:
             ]
             resp = await workflow.execute_activity(
                 "call_llm",
-                args=[check_id, messages, context.get("llm_provider_id")],
+                args=[
+                    None,
+                    messages,
+                    context.get("llm_provider_id"),
+                    context.get("organization_id"),
+                ],
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(
                     initial_interval=timedelta(seconds=1),
@@ -834,7 +839,12 @@ class AutonomousInvestigationWorkflow:
 
             resp = await workflow.execute_activity(
                 "call_llm",
-                args=[check_id, messages, context.get("llm_provider_id")],
+                args=[
+                    None,
+                    messages,
+                    context.get("llm_provider_id"),
+                    context.get("organization_id"),
+                ],
                 start_to_close_timeout=timedelta(minutes=2),
                 retry_policy=RetryPolicy(
                     initial_interval=timedelta(seconds=1),
@@ -926,7 +936,7 @@ class AutonomousInvestigationWorkflow:
 
         final_resp = await workflow.execute_activity(
             "call_llm",
-            args=[check_id, messages, context.get("llm_provider_id")],
+            args=[None, messages, context.get("llm_provider_id"), context.get("organization_id")],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=RetryPolicy(
                 initial_interval=timedelta(seconds=1),

@@ -635,6 +635,7 @@ class CheckWorkflowTests(SimpleTestCase):
                     "execution_mode": "ai_assisted",
                     "evaluation_config": {},
                     "llm_provider_id": "provider-check-2",
+                    "organization_id": "org-check-2",
                 },
                 {"id": "execution-2"},
                 {
@@ -670,8 +671,9 @@ class CheckWorkflowTests(SimpleTestCase):
         self.assertEqual(names.count("call_llm"), 1)
         self.assertNotIn("dispatch_actions", names)
         call_llm_args = execute_activity.await_args_list[names.index("call_llm")].kwargs["args"]
-        self.assertEqual(call_llm_args[0], "check-2")
+        self.assertIsNone(call_llm_args[0])  # thread_id is None for Check workflows
         self.assertEqual(call_llm_args[2], "provider-check-2")
+        self.assertEqual(call_llm_args[3], "org-check-2")
         self.assertIn("structured assessment", call_llm_args[1][0]["content"])
 
     def test_parse_llm_evaluation_normalizes_invalid_json_and_fallback_text(self):
