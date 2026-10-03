@@ -1159,17 +1159,12 @@ def _create_autonomous_session(check_id: str, execution_id: str) -> dict:
 
     try:
         with transaction.atomic():
-            execution = (
-                CheckExecution.objects.select_for_update()
-                .select_related(
-                    "check",
-                    "check__organization",
-                    "check__target_scope",
-                    "check__llm_provider",
-                    "check__created_by",
-                )
-                .get(id=execution_id, check_id=check_id)
-            )
+            execution = CheckExecution.objects.select_related(
+                "check",
+                "check__organization",
+                "check__llm_provider",
+                "check__created_by",
+            ).get(id=execution_id, check_id=check_id)
 
             evaluation_result = execution.evaluation_result or {}
             session_id = evaluation_result.get("autonomous_session_id")
