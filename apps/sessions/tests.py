@@ -753,7 +753,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
         self.assertIn("execute_llm_tool", names)
         self.assertEqual(
             execute_activity.await_args_list[names.index("execute_llm_tool")].kwargs["args"],
-            [tool_call],
+            [None, tool_call, None],
         )
         self.assertEqual(names[-1], "dispatch_actions")
 
@@ -1264,6 +1264,7 @@ class AgentErrorTests(TransactionTestCase):
                         "labels": "env:production",
                     },
                 },
+                None,
             )
         )
 

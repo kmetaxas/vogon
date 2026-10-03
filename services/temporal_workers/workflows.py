@@ -342,7 +342,7 @@ class TroubleshootWorkflow:
                             batch_tasks = [
                                 workflow.execute_activity(
                                     "execute_llm_tool",
-                                    args=[msg_thread_id, tc],
+                                    args=[msg_thread_id, tc, None],
                                     start_to_close_timeout=timedelta(seconds=330),
                                     retry_policy=RetryPolicy(
                                         initial_interval=timedelta(seconds=1),
@@ -893,7 +893,7 @@ class AutonomousInvestigationWorkflow:
                     for tool_call in tool_calls:
                         tool_result = await workflow.execute_activity(
                             "execute_llm_tool",
-                            args=[tool_call],
+                            args=[None, tool_call, context.get("organization_id")],
                             start_to_close_timeout=timedelta(minutes=2),
                             retry_policy=RetryPolicy(
                                 initial_interval=timedelta(seconds=1),

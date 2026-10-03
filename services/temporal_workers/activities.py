@@ -609,17 +609,27 @@ async def call_llm(
 
 
 @activity.defn
-async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
+async def execute_llm_tool(
+    thread_id: str | None, tool_call: dict, organization_id: str | None = None
+) -> dict | list:
     """Execute a tool call requested by the LLM."""
+    from apps.core.models import Organization
     from apps.sessions.models import Thread
 
     name = tool_call.get("name", "")
     args = tool_call.get("arguments") or tool_call.get("args") or {}
 
-    thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
-        id=thread_id
-    )
-    org = thread.tsession.organization
+    org = None
+    thread = None
+    if thread_id:
+        thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
+            id=thread_id
+        )
+        org = thread.tsession.organization
+    elif organization_id:
+        org = await sync_to_async(Organization.objects.get)(id=organization_id)
+    else:
+        return {"error": "No thread_id or organization_id provided for execute_llm_tool"}
 
     if name == "find_tools":
         return await sync_to_async(_find_tools)(
@@ -631,6 +641,10 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
             filters=args.get("filters"),
         )
     elif name == "execute_tool":
+        if not thread:
+            return {"error": "execute_tool requires a thread context"}
+        assert thread is not None
+        assert thread_id is not None
         tool_call, marvin_ids, error = await sync_to_async(_route_and_execute)(org, thread, args)
         if error:
             return {"db_tool_call_id": None, "result": error}
@@ -646,7 +660,7 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
             try:
                 result = await execute_capability(
                     str(thread.tsession.id),
-                    thread_id,
+                    str(thread_id),
                     capability_name,
                     parameters,
                     marvin_id,
@@ -700,10 +714,14 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
 
         return await query_prometheus(args.get("query", ""))
     elif name == "request_architecture_design":
+        if not thread:
+            return {"error": "request_architecture_design requires a thread context"}
         from services.standard_tools.architecture import request_architecture_design
 
         return await sync_to_async(request_architecture_design)(thread, args.get("description", ""))
     elif name == "get_architecture_design":
+        if not thread:
+            return {"error": "get_architecture_design requires a thread context"}
         from services.standard_tools.architecture import get_architecture_design
 
         return await sync_to_async(get_architecture_design)(thread)
