@@ -830,127 +830,56 @@ class AutonomousInvestigationWorkflow:
         self.state["execution_id"] = execution.get("id")
 
         try:
-            system_prompt = (
-                "You are an autonomous infrastructure investigation agent. "
-                "Your goal is to investigate the following check:\n\n"
-                f"Check: {context.get('check_name', 'Unknown')}\n"
-                f"Goal: {context.get('investigation_goal', 'Investigate and report findings')}\n\n"
-                "You have access to tools to gather information. "
-                "When you have gathered sufficient information, provide a final summary "
-                "with your findings and a health assessment (healthy/degraded/critical/unknown). "
-                "Include confidence score (0.0-1.0) and detailed findings."
-            )
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Begin investigation."},
-            ]
-            investigation_results = []
-            self.state["status"] = "investigating"
+            capability_results = []
+            capabilities = context.get("evaluation_config", {}).get("capabilities", [])
+            if capabilities:
+                self.state["status"] = "executing_capabilities"
 
-            for iteration in range(max_iterations):
-                self.state["iteration_count"] = iteration + 1
-                workflow.logger.info(f"Autonomous iteration {iteration + 1}/{max_iterations}")
-
-                resp = await workflow.execute_activity(
-                    "call_llm",
-                    args=[
-                        None,
-                        messages,
-                        context.get("llm_provider_id"),
-                        context.get("organization_id"),
-                    ],
-                    start_to_close_timeout=timedelta(minutes=2),
-                    retry_policy=RetryPolicy(
-                        initial_interval=timedelta(seconds=1),
-                        maximum_interval=timedelta(seconds=30),
-                        maximum_attempts=3,
-                    ),
-                )
-                self._track_llm_usage(resp)
-
-                reason = resp.get("reason")
-                if reason:
-                    self.state["last_failure_reason"] = reason
-                    self.state["last_failure_detail"] = resp.get("error")
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                f"[LLM_ERROR] The investigation LLM returned {reason}: "
-                                f"{resp.get('error', 'Unknown error')}. "
-                                "Continue with available evidence."
-                            ),
-                        }
-                    )
-                    investigation_results.append(
-                        {"iteration": iteration + 1, "error": resp.get("error", "")}
-                    )
-                    break
-
-                tool_calls = resp.get("tool_calls", [])
-                if tool_calls:
-                    tool_results = []
-                    for tool_call in tool_calls:
-                        tool_result = await workflow.execute_activity(
-                            "execute_llm_tool",
-                            args=[None, tool_call, context.get("organization_id")],
-                            start_to_close_timeout=timedelta(minutes=2),
+                async def execute_one_capability(cap_config: dict) -> dict:
+                    try:
+                        result = await workflow.execute_activity(
+                            "execute_capability",
+                            args=[
+                                check_id,
+                                self.state["execution_id"],
+                                cap_config["name"],
+                                cap_config.get("parameters", {}),
+                                cap_config.get("marvin_id", ""),
+                            ],
+                            start_to_close_timeout=timedelta(minutes=5),
                             retry_policy=RetryPolicy(
                                 initial_interval=timedelta(seconds=1),
                                 maximum_interval=timedelta(seconds=30),
                                 maximum_attempts=3,
                             ),
                         )
-                        tool_results.append(tool_result)
-
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": resp.get("content", ""),
-                            "tool_calls": tool_calls,
+                        return {"capability": cap_config["name"], "success": True, "result": result}
+                    except Exception as exc:
+                        return {
+                            "capability": cap_config["name"],
+                            "success": False,
+                            "error": str(exc),
                         }
-                    )
-                    for tool_call, tool_result in zip(tool_calls, tool_results):
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "content": json.dumps(tool_result),
-                                "tool_call_id": (
-                                    tool_result.get("tool_call_id", tool_call.get("id", ""))
-                                    if isinstance(tool_result, dict)
-                                    else tool_call.get("id", "")
-                                ),
-                                "name": tool_call.get("name", ""),
-                            }
-                        )
-                    investigation_results.append(
-                        {"iteration": iteration + 1, "tools": tool_results}
-                    )
-                    continue
 
-                messages.append({"role": "assistant", "content": resp.get("content", "")})
-                investigation_results.append(
-                    {"iteration": iteration + 1, "response": resp.get("content", "")}
-                )
-                break
-            else:
-                self.state["status"] = "max_iterations_reached"
-                self.state["last_failure_reason"] = "limit"
-                self.state["last_failure_detail"] = "Maximum investigation iterations reached"
-                workflow.logger.warning(
-                    f"Autonomous investigation reached max iterations ({max_iterations})"
+                capability_results = await asyncio.gather(
+                    *(execute_one_capability(capability) for capability in capabilities)
                 )
 
-            final_prompt = (
-                "Based on your investigation, provide a structured JSON response with:\n"
+            self.state["status"] = "ai_evaluating"
+            system_prompt = (
+                "You are evaluating infrastructure health check results. "
+                "Review the collected evidence and provide a structured assessment.\n\n"
+                "Respond with JSON containing:\n"
                 "- state: one of healthy/degraded/critical/unknown\n"
                 "- confidence: float 0.0-1.0\n"
                 "- findings: list of {severity, message, path, expected, actual}\n"
                 "- summary: brief text summary"
             )
-            messages.append({"role": "user", "content": final_prompt})
-
-            final_resp = await workflow.execute_activity(
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps({"capabilities": capability_results})},
+            ]
+            resp = await workflow.execute_activity(
                 "call_llm",
                 args=[
                     None,
@@ -965,9 +894,9 @@ class AutonomousInvestigationWorkflow:
                     maximum_attempts=3,
                 ),
             )
-            self._track_llm_usage(final_resp)
+            self._track_llm_usage(resp)
 
-            evaluation = self._parse_evaluation(final_resp.get("content", ""))
+            evaluation = self._parse_evaluation(resp.get("content", ""))
             await workflow.execute_activity(
                 "update_check_execution",
                 args=[
@@ -979,6 +908,7 @@ class AutonomousInvestigationWorkflow:
                         "findings": evaluation["findings"],
                         "summary": evaluation.get("summary", ""),
                         "confidence": evaluation.get("confidence", 0.5),
+                        "capabilities": capability_results,
                     },
                 ],
                 start_to_close_timeout=timedelta(seconds=30),
@@ -996,7 +926,7 @@ class AutonomousInvestigationWorkflow:
             return {
                 **self.state,
                 "evaluation": evaluation,
-                "investigation_results": investigation_results,
+                "capability_results": capability_results,
             }
         except Exception as exc:
             await workflow.execute_activity(

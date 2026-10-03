@@ -691,32 +691,27 @@ class CheckWorkflowTests(SimpleTestCase):
 
 
 class AutonomousInvestigationWorkflowTests(SimpleTestCase):
-    def test_run_executes_tools_and_returns_structured_evaluation(self):
+    def test_run_executes_capabilities_and_returns_structured_evaluation(self):
         workflow_instance = AutonomousInvestigationWorkflow()
-        tool_call = {"id": "tc1", "name": "query_prometheus", "arguments": {"query": "up"}}
         execute_activity = AsyncMock(
             side_effect=[
                 {
                     "check_name": "API Health",
                     "investigation_goal": "Verify API health",
                     "llm_provider_id": "provider-auto-1",
+                    "organization_id": "org-auto-1",
+                    "evaluation_config": {
+                        "capabilities": [
+                            {
+                                "name": "query_prometheus",
+                                "parameters": {"query": "up"},
+                                "marvin_id": "marvin-1",
+                            }
+                        ]
+                    },
                 },
                 {"id": "execution-1"},
-                {
-                    "content": "Need metrics",
-                    "tool_calls": [tool_call],
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "cost": "0.01",
-                },
-                {"tool_call_id": "tc1", "result": {"status": "up"}},
-                {
-                    "content": "API looks healthy",
-                    "tool_calls": [],
-                    "input_tokens": 8,
-                    "output_tokens": 4,
-                    "cost": "0.02",
-                },
+                {"status": "up"},
                 {
                     "content": '{"state":"healthy","confidence":0.9,"findings":[],"summary":"OK"}',
                     "tool_calls": [],
@@ -740,34 +735,35 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["execution_id"], "execution-1")
-        self.assertEqual(result["iteration_count"], 2)
-        self.assertEqual(result["cumulative_tokens"], 37)
-        self.assertEqual(result["cumulative_cost"], "0.06")
+        self.assertEqual(result["iteration_count"], 0)
+        self.assertEqual(result["cumulative_tokens"], 10)
+        self.assertEqual(result["cumulative_cost"], "0.03")
         self.assertEqual(result["evaluation"]["state"], "healthy")
-        self.assertEqual(result["investigation_results"][0]["tools"][0]["result"]["status"], "up")
+        self.assertEqual(result["capability_results"][0]["result"]["status"], "up")
         names = [call.args[0] for call in execute_activity.await_args_list]
-        self.assertEqual(names.count("call_llm"), 3)
+        self.assertEqual(names.count("call_llm"), 1)
         for call in execute_activity.await_args_list:
             if call.args[0] == "call_llm":
                 self.assertEqual(call.kwargs["args"][2], "provider-auto-1")
-        self.assertIn("execute_llm_tool", names)
+                self.assertEqual(call.kwargs["args"][3], "org-auto-1")
+                self.assertIn("structured assessment", call.kwargs["args"][1][0]["content"])
+                self.assertIn("query_prometheus", call.kwargs["args"][1][1]["content"])
+        self.assertNotIn("execute_llm_tool", names)
+        self.assertIn("execute_capability", names)
         self.assertEqual(
-            execute_activity.await_args_list[names.index("execute_llm_tool")].kwargs["args"],
-            [None, tool_call, None],
+            execute_activity.await_args_list[names.index("execute_capability")].kwargs["args"],
+            ["check-1", "execution-1", "query_prometheus", {"query": "up"}, "marvin-1"],
         )
         self.assertEqual(names[-1], "dispatch_actions")
 
-    def test_run_marks_max_iterations_and_skips_actions_for_dry_run(self):
+    def test_run_ignores_max_iterations_and_skips_actions_for_dry_run(self):
         workflow_instance = AutonomousInvestigationWorkflow()
-        tool_call = {"id": "tc1", "name": "find_tools", "arguments": {"query": "disk"}}
         execute_activity = AsyncMock(
             side_effect=[
                 {"check_name": "Disk", "investigation_goal": "Check disk"},
                 {"id": "execution-2"},
-                {"content": "Need tool", "tool_calls": [tool_call]},
-                {"tool_call_id": "tc1", "result": [{"name": "check_disk"}]},
                 {
-                    "content": "Critical: max iteration evidence is insufficient",
+                    "content": "Critical: disk evidence is insufficient",
                     "tool_calls": [],
                 },
                 {"id": "execution-2"},
@@ -786,9 +782,11 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             )
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["last_failure_reason"], "limit")
+        self.assertIsNone(result["last_failure_reason"])
         self.assertEqual(result["evaluation"]["state"], "critical")
         names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(names.count("call_llm"), 1)
+        self.assertNotIn("execute_llm_tool", names)
         self.assertNotIn("dispatch_actions", names)
 
     def test_parse_evaluation_accepts_markdown_json_and_fallback_text(self):
