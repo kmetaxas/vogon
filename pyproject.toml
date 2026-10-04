@@ -61,7 +61,7 @@ select = ["E", "F", "I", "N", "UP", "W"]
 [tool.pytest.ini_options]
 norecursedirs = ["scripts", ".omo", "designs"]
 testpaths = ["apps", "services"]
-DJANGO_SETTINGS_MODULE = "vogon.settings"
+DJANGO_SETTINGS_MODULE = "vogon.test_settings"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
 asyncio_mode = "auto"
 
