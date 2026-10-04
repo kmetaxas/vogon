@@ -3,6 +3,7 @@ from django.contrib import admin
 from apps.checks.models import (
     Check,
     CheckActionLog,
+    CheckCapabilityExecution,
     CheckExecution,
     CheckHealthState,
     CheckVersion,
@@ -27,6 +28,38 @@ class CheckAdmin(admin.ModelAdmin):
 class CheckExecutionAdmin(admin.ModelAdmin):
     list_display = ["check", "execution_status", "health_state", "triggered_at"]
     list_filter = ["execution_status", "health_state"]
+
+
+class CheckCapabilityExecutionInline(admin.TabularInline):
+    model = CheckCapabilityExecution
+    extra = 0
+    fields = [
+        "capability_name",
+        "marvin",
+        "status",
+        "input_tokens",
+        "output_tokens",
+        "cost",
+        "started_at",
+        "completed_at",
+    ]
+    readonly_fields = [
+        "capability_name",
+        "marvin",
+        "status",
+        "input_tokens",
+        "output_tokens",
+        "cost",
+        "started_at",
+        "completed_at",
+    ]
+
+
+@admin.register(CheckCapabilityExecution)
+class CheckCapabilityExecutionAdmin(admin.ModelAdmin):
+    list_display = ["capability_name", "check_execution", "marvin", "status", "created_at"]
+    list_filter = ["status"]
+    search_fields = ["capability_name"]
 
 
 @admin.register(CheckHealthState)

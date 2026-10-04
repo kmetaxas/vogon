@@ -32,6 +32,28 @@ def _setup_django_models():
     django_setup()
 
 
+def _resolve_selector_marvin_id(check_id: str, capability_name: str, selector: dict) -> str:
+    """Resolve a single Marvin id for a Check capability selector."""
+    _setup_django_models()
+
+    from apps.checks.models import Check
+    from apps.marvins.discovery import DiscoveryEngine
+    from apps.marvins.selectors import TargetSelector
+
+    check = Check.objects.get(id=check_id)
+    target_set = DiscoveryEngine().resolve_targets(
+        check.organization,
+        capability_name,
+        selector=TargetSelector.from_dict(selector),
+    )
+    snapshot: list[str] = list(target_set.snapshot or [])  # type: ignore[arg-type]
+    if not snapshot:
+        raise ValueError(
+            f"No online Marvin found for capability '{capability_name}' with selector {selector}"
+        )
+    return str(snapshot[0])
+
+
 @activity.defn
 async def execute_capability(
     session_id: str,
@@ -39,6 +61,7 @@ async def execute_capability(
     capability_name: str,
     parameters: dict,
     marvin_id: str,
+    selector: dict | None = None,
     target_set_id: str | None = None,
     execution_mode: str | None = None,
     result_index: int = 0,
@@ -54,6 +77,11 @@ async def execute_capability(
     # marvin_id is the Marvin model UUID; we need the client_id for the stream lookup
     _setup_django_models()
     from apps.marvins.models import Marvin
+
+    if not marvin_id and selector:
+        marvin_id = await sync_to_async(_resolve_selector_marvin_id)(
+            session_id, capability_name, selector
+        )
 
     marvin = await sync_to_async(Marvin.objects.get)(id=marvin_id)
     marvin_stream = _grpc_service.get_marvin_stream(marvin.client_id)
@@ -655,47 +683,37 @@ async def execute_llm_tool(
         execution_mode = tool_call.execution_mode
         executions = await sync_to_async(_create_executions)(tool_call.id, marvin_ids)
 
-        async def _execute_one(index: int, marvin_id: str) -> dict:
-            execution_id = executions[index]["id"]
-            await sync_to_async(_mark_execution_running)(execution_id)
-            try:
-                result = await execute_capability(
-                    str(thread.tsession.id),
-                    str(thread_id),
-                    capability_name,
-                    parameters,
-                    marvin_id,
-                    target_set_id=target_set_id,
-                    execution_mode=execution_mode,
-                    result_index=index,
-                )
-            except Exception as exc:
-                await sync_to_async(_mark_execution_failed)(execution_id, str(exc))
-                return {"index": index, "marvin_id": marvin_id, "error": str(exc)}
+        from services.temporal_workers import fanout
 
-            await sync_to_async(_mark_execution_completed)(execution_id, result)
-            return {"index": index, "marvin_id": marvin_id, "result": result}
+        async def update_status(
+            execution_id: str, status: str, result: dict | None, error: str | None
+        ) -> None:
+            await sync_to_async(fanout.update_execution_status)(
+                execution_id,
+                status,
+                result,
+                error,
+                update_record=_update_session_execution_status,
+            )
 
         from apps.sessions.budget import release_execution_budget
 
         try:
-            execution_results = await asyncio.gather(
-                *[_execute_one(index, marvin_id) for index, marvin_id in enumerate(marvin_ids)]
+            execution_results = await fanout.execute_fanout(
+                marvin_ids,
+                capability_name,
+                parameters,
+                execute_capability=execute_capability,
+                execution_ids=[execution["id"] for execution in executions],
+                update_status=update_status,
+                session_id=str(thread.tsession.id),
+                thread_id=str(thread_id),
+                target_set_id=target_set_id,
+                execution_mode=execution_mode,
             )
         finally:
             await sync_to_async(release_execution_budget)(thread.tsession, len(marvin_ids))
-        results = [item for item in execution_results if "result" in item]
-        errors = [item for item in execution_results if "error" in item]
-        aggregated = {
-            "success": not errors,
-            "results": results,
-            "errors": errors,
-            "summary": {
-                "total": len(execution_results),
-                "succeeded": len(results),
-                "failed": len(errors),
-            },
-        }
+        aggregated = fanout.aggregate_results(execution_results)
         await sync_to_async(_complete_tool_call)(tool_call.id, aggregated)
         return {"db_tool_call_id": str(tool_call.id), "result": aggregated}
     elif name == "get_prometheus_alerts":
@@ -768,9 +786,10 @@ def _route_and_execute(org, thread, args):
 
     from apps.marvins.discovery import BudgetExceeded, DiscoveryEngine, DiscoveryError
     from apps.marvins.labels import LabelSelectorError, parse_label_selector
-    from apps.marvins.models import Capability, Marvin
+    from apps.marvins.models import Marvin
     from apps.marvins.selectors import TargetSelector
     from apps.sessions.models import ToolCall
+    from services.temporal_workers import fanout
 
     capability_name = args.get("capability_name") or args.get("capability")
     selector_str = args.get("selector") or args.get("labels")
@@ -794,20 +813,15 @@ def _route_and_execute(org, thread, args):
     engine = DiscoveryEngine()
     target_set = None
     try:
-        target_set = engine.resolve_targets(
+        target_set, capability, marvin_ids, policy_snapshot = fanout.resolve_targets(
+            engine,
             org,
             capability_name,
             selector=selector,
-            session_scope=thread.tsession.target_scope,
-        )
-        capability = Capability.objects.get(id=target_set.capability_id)
-        snapshot = cast(list[str], target_set.snapshot)
-        policy, _budget = engine.check_execution_policy(
-            org,
-            capability,
-            len(snapshot),
+            target_scope=thread.tsession.target_scope,
             session=thread.tsession,
         )
+        snapshot = cast(list[str], target_set.snapshot)
     except BudgetExceeded as exc:
         return (
             None,
@@ -843,7 +857,6 @@ def _route_and_execute(org, thread, args):
     try:
         marvins = list(Marvin.objects.filter(id__in=snapshot, organization=org))
         marvins_by_id = {str(marvin.id): marvin for marvin in marvins}
-        marvin_ids = [str(marvin_id) for marvin_id in snapshot if str(marvin_id) in marvins_by_id]
         if not marvin_ids:
             release_execution_budget(thread.tsession, len(snapshot))
             return (
@@ -864,7 +877,7 @@ def _route_and_execute(org, thread, args):
             status=ToolCall.Status.IN_PROGRESS,
             target_set=target_set,
             execution_mode=execution_mode,
-            policy_snapshot=policy.model_dump(),
+            policy_snapshot=policy_snapshot,
         )
 
         return tool_call, marvin_ids, None
@@ -878,59 +891,276 @@ def _create_executions(tool_call_id: str, marvin_ids: list[str]) -> list[dict[st
 
     from apps.marvins.models import Marvin
     from apps.sessions.models import Execution, ToolCall
+    from services.temporal_workers import fanout
 
     tool_call = ToolCall.objects.get(id=tool_call_id)
     marvins = Marvin.objects.in_bulk(marvin_ids)
-    executions = [
-        Execution.objects.create(
-            tool_call=tool_call,
-            marvin=marvins.get(marvin_id),
-            result_index=index,
-        )
-        for index, marvin_id in enumerate(marvin_ids)
-    ]
-    return [{"id": str(execution.id)} for execution in executions]
+    return fanout.create_execution_records(
+        "session_tool_call",
+        str(tool_call_id),
+        marvin_ids,
+        tool_call.capability,
+        tool_call.target_set,
+        tool_call.policy_snapshot,
+        create_record=lambda _parent_type, _parent_id, marvin_id, _capability, _target_set, _policy, index: (  # noqa: E501
+            Execution.objects.create(
+                tool_call=tool_call,
+                marvin=marvins.get(marvin_id),
+                result_index=index,
+            )
+        ),
+    )
 
 
 def _mark_execution_running(execution_id: str) -> None:
-    _setup_django_models()
+    from services.temporal_workers import fanout
 
-    from django.utils import timezone
-
-    from apps.sessions.models import Execution
-
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.RUNNING,
-        started_at=timezone.now(),
+    fanout.update_execution_status(
+        execution_id,
+        "running",
+        update_record=_update_session_execution_status,
     )
 
 
 def _mark_execution_completed(execution_id: str, result: dict) -> None:
-    _setup_django_models()
+    from services.temporal_workers import fanout
 
-    from django.utils import timezone
-
-    from apps.sessions.models import Execution
-
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.COMPLETED,
+    fanout.update_execution_status(
+        execution_id,
+        "completed",
         result=result,
-        completed_at=timezone.now(),
+        update_record=_update_session_execution_status,
     )
 
 
 def _mark_execution_failed(execution_id: str, error: str) -> None:
+    from services.temporal_workers import fanout
+
+    fanout.update_execution_status(
+        execution_id,
+        "failed",
+        error=error,
+        update_record=_update_session_execution_status,
+    )
+
+
+def _update_session_execution_status(
+    execution_id: str, status: str, result: dict | None = None, error: str | None = None
+) -> None:
     _setup_django_models()
 
     from django.utils import timezone
 
     from apps.sessions.models import Execution
 
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.FAILED,
-        error_message=error,
-        completed_at=timezone.now(),
+    updates: dict[str, Any] = {}
+    if status == "running":
+        updates = {"status": Execution.Status.RUNNING, "started_at": timezone.now()}
+    elif status == "completed":
+        updates = {
+            "status": Execution.Status.COMPLETED,
+            "result": result,
+            "completed_at": timezone.now(),
+        }
+    elif status == "failed":
+        updates = {
+            "status": Execution.Status.FAILED,
+            "error_message": error,
+            "completed_at": timezone.now(),
+        }
+    else:
+        raise ValueError(f"Unsupported execution status: {status}")
+    Execution.objects.filter(id=execution_id).update(**updates)
+
+
+@activity.defn
+async def resolve_check_capability_targets(
+    check_id: str, capability_name: str, selector: dict | None = None
+) -> dict:
+    return await sync_to_async(_resolve_check_capability_targets)(
+        check_id, capability_name, selector or {}
     )
+
+
+def _resolve_check_capability_targets(check_id: str, capability_name: str, selector: dict) -> dict:
+    _setup_django_models()
+
+    from apps.checks.models import Check
+    from apps.marvins.discovery import DiscoveryEngine
+    from apps.marvins.selectors import TargetSelector
+    from services.temporal_workers import fanout
+
+    check = Check.objects.select_related("organization", "target_scope").get(id=check_id)
+    try:
+        target_selector = TargetSelector.from_dict(selector) if selector else None
+        target_set, capability, marvin_ids, policy_snapshot = fanout.resolve_targets(
+            DiscoveryEngine(),
+            check.organization,
+            capability_name,
+            target_selector,
+            check.target_scope,
+        )
+    except Exception as exc:
+        return {"success": False, "capability": capability_name, "error": str(exc)}
+
+    if not marvin_ids:
+        return {
+            "success": False,
+            "capability": capability_name,
+            "target_set_id": str(target_set.id),
+            "error": f"No online Marvin found for capability '{capability_name}'",
+            "resolved_targets": {
+                "target_set_id": str(target_set.id),
+                "capability_id": str(capability.id),
+                "capability": capability_name,
+                "selector": selector,
+                "snapshot": [str(marvin_id) for marvin_id in (target_set.snapshot or [])],
+                "marvin_ids": [],
+                "policy_snapshot": policy_snapshot,
+            },
+        }
+
+    return {
+        "success": True,
+        "capability": capability_name,
+        "capability_id": str(capability.id),
+        "target_set_id": str(target_set.id),
+        "marvin_ids": marvin_ids,
+        "policy_snapshot": policy_snapshot,
+        "resolved_targets": {
+            "target_set_id": str(target_set.id),
+            "capability_id": str(capability.id),
+            "capability": capability_name,
+            "selector": selector,
+            "snapshot": [str(marvin_id) for marvin_id in (target_set.snapshot or [])],
+            "marvin_ids": marvin_ids,
+            "policy_snapshot": policy_snapshot,
+        },
+    }
+
+
+@activity.defn
+async def reserve_check_execution_budget(check_id: str, target_count: int) -> dict:
+    return await sync_to_async(_reserve_check_execution_budget)(check_id, target_count)
+
+
+def _reserve_check_execution_budget(check_id: str, target_count: int) -> dict:
+    _setup_django_models()
+
+    from apps.checks.budget import check_and_reserve_budget
+    from apps.checks.models import Check
+
+    check = Check.objects.get(id=check_id)
+    budget = check_and_reserve_budget(check, target_count)
+    return {"check_id": check_id, "target_count": target_count, "budget": budget.to_dict()}
+
+
+@activity.defn
+async def release_check_execution_budget(check_id: str, target_count: int) -> dict:
+    return await sync_to_async(_release_check_execution_budget)(check_id, target_count)
+
+
+def _release_check_execution_budget(check_id: str, target_count: int) -> dict:
+    _setup_django_models()
+
+    from apps.checks.budget import release_execution_budget
+    from apps.checks.models import Check
+
+    check = Check.objects.get(id=check_id)
+    budget = release_execution_budget(check, target_count)
+    return {"check_id": check_id, "target_count": target_count, "budget": budget.to_dict()}
+
+
+@activity.defn
+async def create_check_capability_executions(
+    check_execution_id: str,
+    marvin_ids: list[str],
+    capability_name: str,
+    target_set_id: str | None,
+    policy_snapshot: dict | None = None,
+) -> list[dict[str, str]]:
+    return await sync_to_async(_create_check_capability_executions)(
+        check_execution_id, marvin_ids, capability_name, target_set_id, policy_snapshot or {}
+    )
+
+
+def _create_check_capability_executions(
+    check_execution_id: str,
+    marvin_ids: list[str],
+    capability_name: str,
+    target_set_id: str | None,
+    policy_snapshot: dict,
+) -> list[dict[str, str]]:
+    _setup_django_models()
+
+    from apps.checks.models import CheckCapabilityExecution, CheckExecution
+    from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
+    from services.temporal_workers import fanout
+
+    check_execution = CheckExecution.objects.get(id=check_execution_id)
+    capability = Capability.objects.get(
+        name=capability_name, organization=check_execution.check.organization
+    )
+    target_set = (
+        ResolvedTargetSet.objects.filter(id=target_set_id).first() if target_set_id else None
+    )
+    marvins = {str(marvin.id): marvin for marvin in Marvin.objects.filter(id__in=marvin_ids)}
+    return fanout.create_execution_records(
+        "check_execution",
+        str(check_execution_id),
+        marvin_ids,
+        capability,
+        target_set,
+        policy_snapshot,
+        create_record=lambda _parent_type, _parent_id, marvin_id, cap, target, _policy, _index: (
+            CheckCapabilityExecution.objects.create(
+                check_execution=check_execution,
+                capability_name=cap.name,
+                marvin=marvins.get(str(marvin_id)),
+                target_set=target,
+            )
+        ),
+    )
+
+
+@activity.defn
+async def update_check_capability_execution(
+    execution_id: str, status: str, result: dict | None = None, error: str | None = None
+) -> dict:
+    return await sync_to_async(_update_check_capability_execution)(
+        execution_id, status, result, error
+    )
+
+
+def _update_check_capability_execution(
+    execution_id: str, status: str, result: dict | None = None, error: str | None = None
+) -> dict:
+    _setup_django_models()
+
+    from django.utils import timezone
+
+    from apps.checks.models import CheckCapabilityExecution
+
+    execution = CheckCapabilityExecution.objects.get(id=execution_id)
+    if status == "running":
+        execution.status = CheckCapabilityExecution.Status.RUNNING
+        execution.started_at = timezone.now()
+    elif status == "completed":
+        execution.status = CheckCapabilityExecution.Status.COMPLETED
+        execution.result_json = result or {}
+        execution.completed_at = timezone.now()
+        if result:
+            execution.input_tokens = result.get("input_tokens", execution.input_tokens)
+            execution.output_tokens = result.get("output_tokens", execution.output_tokens)
+            execution.cost = Decimal(str(result.get("cost", execution.cost)))
+    elif status == "failed":
+        execution.status = CheckCapabilityExecution.Status.FAILED
+        execution.error_message = error or ""
+        execution.completed_at = timezone.now()
+    else:
+        raise ValueError(f"Unsupported check capability execution status: {status}")
+    execution.save()
+    return {"id": str(execution.id), "status": status}
 
 
 @activity.defn
@@ -1042,6 +1272,8 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
         except CheckVersion.DoesNotExist:
             pass
 
+    from apps.checks.models import normalize_execution_budget
+
     context = {
         "check_id": str(check.id),
         "check_name": check.name,
@@ -1049,7 +1281,7 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
         "execution_mode": check.execution_mode,
         "evaluation_config": check.evaluation_config or {},
         "notification_config": check.notification_config or {},
-        "execution_budget": check.execution_budget or {},
+        "execution_budget": normalize_execution_budget(check.execution_budget),
         "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
         "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
         "investigation_goal": (
@@ -1094,28 +1326,50 @@ async def update_check_execution(
     status: str,
     health_state: str,
     result: dict,
+    evidence: dict | list | None = None,
+    resolved_targets: dict | None = None,
 ) -> dict:
     """Update or create a CheckExecution record."""
     _setup_django_models()
+    from django.utils import timezone
+
     from apps.checks.models import Check, CheckExecution
+
+    status_enum = getattr(
+        CheckExecution.ExecutionStatus,
+        status.upper(),
+        CheckExecution.ExecutionStatus.PENDING,
+    )
+    health_enum = getattr(
+        CheckExecution.HealthState,
+        health_state.upper(),
+        CheckExecution.HealthState.UNKNOWN,
+    )
+    terminal_statuses = (
+        CheckExecution.ExecutionStatus.COMPLETED,
+        CheckExecution.ExecutionStatus.FAILED,
+    )
+    now = timezone.now()
 
     if execution_id:
         try:
             execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
-            execution.execution_status = getattr(
-                CheckExecution.ExecutionStatus,
-                status.upper(),
-                CheckExecution.ExecutionStatus.PENDING,
-            )
-            execution.health_state = getattr(
-                CheckExecution.HealthState,
-                health_state.upper(),
-                CheckExecution.HealthState.UNKNOWN,
-            )
+            execution.execution_status = status_enum
+            execution.health_state = health_enum
             execution.evaluation_result = result
+            if evidence is not None:
+                execution.evidence = evidence
+            if resolved_targets is not None:
+                execution.resolved_targets = resolved_targets
             execution.input_tokens = result.get("input_tokens", execution.input_tokens)
             execution.output_tokens = result.get("output_tokens", execution.output_tokens)
-            execution.cost = Decimal(result.get("cost", "0.00"))
+            execution.cost = Decimal(result.get("cost", str(execution.cost)))
+            if status_enum == CheckExecution.ExecutionStatus.RUNNING and not execution.started_at:
+                execution.started_at = now
+            if status_enum in terminal_statuses:
+                if not execution.started_at:
+                    execution.started_at = now
+                execution.completed_at = now
             await sync_to_async(execution.save)()
             return {"id": str(execution.id), "status": status, "health_state": health_state}
         except CheckExecution.DoesNotExist:
@@ -1131,20 +1385,26 @@ async def update_check_execution(
             "error": "Check not found",
         }
 
-    execution = await sync_to_async(CheckExecution.objects.create)(
-        check=check,
-        execution_status=getattr(
-            CheckExecution.ExecutionStatus,
-            status.upper(),
-            CheckExecution.ExecutionStatus.PENDING,
-        ),
-        health_state=getattr(
-            CheckExecution.HealthState,
-            health_state.upper(),
-            CheckExecution.HealthState.UNKNOWN,
-        ),
-        evaluation_result=result,
-    )
+    create_kwargs: dict[str, Any] = {
+        "check": check,
+        "execution_status": status_enum,
+        "health_state": health_enum,
+        "evaluation_result": result,
+        "input_tokens": result.get("input_tokens", 0),
+        "output_tokens": result.get("output_tokens", 0),
+        "cost": Decimal(result.get("cost", "0.00")),
+    }
+    if evidence is not None:
+        create_kwargs["evidence"] = evidence
+    if resolved_targets is not None:
+        create_kwargs["resolved_targets"] = resolved_targets
+    if status_enum == CheckExecution.ExecutionStatus.RUNNING:
+        create_kwargs["started_at"] = now
+    if status_enum in terminal_statuses:
+        create_kwargs["started_at"] = now
+        create_kwargs["completed_at"] = now
+
+    execution = await sync_to_async(CheckExecution.objects.create)(**create_kwargs)
     return {"id": str(execution.id), "status": status, "health_state": health_state}
 
 

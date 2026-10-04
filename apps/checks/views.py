@@ -2,12 +2,18 @@
 
 import json
 
+from django.core.exceptions import ValidationError
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
-from apps.checks.models import Check, CheckExecution, CheckVersion
+from apps.checks.models import (
+    Check,
+    CheckExecution,
+    CheckVersion,
+    validate_capability_selectors,
+)
 from apps.core.mixins import OrganizationRequiredMixin
 
 
@@ -77,6 +83,34 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 },
             )
 
+        try:
+            validate_capability_selectors(evaluation_config)
+        except ValidationError as exc:
+            check = {
+                "name": request.POST.get("name", ""),
+                "description": request.POST.get("description", ""),
+                "instructions": request.POST.get("instructions", ""),
+                "schedule_type": request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
+                "schedule_expression": request.POST.get("schedule_expression", "60"),
+                "timezone": request.POST.get("timezone", "UTC"),
+                "execution_mode": request.POST.get(
+                    "execution_mode", Check.ExecutionMode.DETERMINISTIC
+                ),
+            }
+            return render(
+                request,
+                "checks/check_form.html",
+                {
+                    "organization": self.organization,
+                    "schedule_types": Check.ScheduleType.choices,
+                    "execution_modes": Check.ExecutionMode.choices,
+                    "check": check,
+                    "error": " ".join(exc.messages),
+                    "evaluation_config_raw": evaluation_config_raw,
+                    "notification_config_raw": notification_config_raw,
+                },
+            )
+
         check = Check.objects.create(
             organization=self.organization,
             name=request.POST.get("name", "Unnamed Check"),
@@ -141,6 +175,22 @@ class CheckEditView(OrganizationRequiredMixin, View):
                     "schedule_types": Check.ScheduleType.choices,
                     "execution_modes": Check.ExecutionMode.choices,
                     "error": "Invalid JSON in config fields.",
+                    "evaluation_config_raw": evaluation_config_raw,
+                    "notification_config_raw": notification_config_raw,
+                },
+            )
+
+        try:
+            validate_capability_selectors(evaluation_config)
+        except ValidationError as exc:
+            return render(
+                request,
+                "checks/check_form.html",
+                {
+                    "check": check,
+                    "schedule_types": Check.ScheduleType.choices,
+                    "execution_modes": Check.ExecutionMode.choices,
+                    "error": " ".join(exc.messages),
                     "evaluation_config_raw": evaluation_config_raw,
                     "notification_config_raw": notification_config_raw,
                 },

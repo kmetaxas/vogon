@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from django.test import SimpleTestCase, TestCase
 from django.test.testcases import TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 from openai import APIError, APITimeoutError
 
 from apps.core.models import Organization, OrganizationMembership, User
@@ -15,6 +16,7 @@ from apps.llm.models import LLMProvider
 from apps.sessions.models import (
     AgentEvent,
     ArchitectureRequest,
+    Execution,
     Message,
     Thread,
     ThreadMembership,
@@ -23,10 +25,13 @@ from apps.sessions.models import (
 )
 from services.llm.base import LLMResponse
 from services.temporal_workers.activities import (
+    _create_executions,
+    _route_and_execute,
     build_llm_context,
     call_llm,
     create_assistant_message,
     create_tool_call_messages,
+    execute_llm_tool,
     initialize_session,
     record_agent_event,
     set_session_status,
@@ -550,7 +555,7 @@ class TroubleshootWorkflowTests(TestCase):
 
 
 class CheckWorkflowTests(SimpleTestCase):
-    def test_run_executes_capabilities_and_evaluates_deterministic_check(self):
+    def test_check_workflow_executes_capabilities_and_evaluates_deterministic_check(self):
         workflow_instance = CheckWorkflow()
         context = {
             "check_name": "API Health",
@@ -576,7 +581,23 @@ class CheckWorkflowTests(SimpleTestCase):
             side_effect=[
                 context,
                 {"id": "execution-1"},
+                {
+                    "success": True,
+                    "target_set_id": "target-set-1",
+                    "marvin_ids": ["marvin-1"],
+                    "policy_snapshot": {"max_targets": 1},
+                    "resolved_targets": {
+                        "target_set_id": "target-set-1",
+                        "snapshot": ["marvin-1"],
+                        "marvin_ids": ["marvin-1"],
+                    },
+                },
+                {"reserved": True},
+                [{"id": "cap-exec-1"}],
+                {"id": "cap-exec-1", "status": "running"},
                 {"status": "ok"},
+                {"id": "cap-exec-1", "status": "completed"},
+                {"released": True},
                 evaluation,
                 {"id": "execution-1"},
                 {"dispatched": True},
@@ -598,13 +619,20 @@ class CheckWorkflowTests(SimpleTestCase):
         self.assertEqual(result["evaluation"], evaluation)
         self.assertEqual(result["capability_results"][0]["capability"], "http_check")
         self.assertTrue(result["capability_results"][0]["success"])
+        self.assertEqual(result["capability_results"][0]["result"]["summary"]["total"], 1)
         names = [call.args[0] for call in execute_activity.await_args_list]
         self.assertEqual(
             names,
             [
                 "load_check_context",
                 "update_check_execution",
+                "resolve_check_capability_targets",
+                "reserve_check_execution_budget",
+                "create_check_capability_executions",
+                "update_check_capability_execution",
                 "execute_capability",
+                "update_check_capability_execution",
+                "release_check_execution_budget",
                 "evaluate_check",
                 "update_check_execution",
                 "dispatch_actions",
@@ -618,16 +646,27 @@ class CheckWorkflowTests(SimpleTestCase):
                 "http_check",
                 {"url": "https://example.test/health"},
                 "marvin-1",
+                None,
+                "target-set-1",
+                "single",
+                0,
             ],
         )
         evaluate_args = execute_activity.await_args_list[names.index("evaluate_check")].kwargs[
             "args"
         ]
         self.assertEqual(evaluate_args[0], "check-1")
-        self.assertEqual(evaluate_args[1]["capabilities"][0]["result"], {"status": "ok"})
+        self.assertEqual(
+            evaluate_args[1]["capabilities"][0]["result"]["results"][0]["result"],
+            {"status": "ok"},
+        )
         self.assertEqual(evaluate_args[2], context["evaluation_config"]["rules"])
+        final_update_args = execute_activity.await_args_list[-2].kwargs["args"]
+        self.assertNotIn("capabilities", final_update_args[4])
+        self.assertEqual(final_update_args[5]["capabilities"][0]["capability"], "http_check")
+        self.assertEqual(final_update_args[6]["http_check"]["marvin_ids"], ["marvin-1"])
 
-    def test_run_uses_llm_for_ai_assisted_check_and_skips_actions_for_dry_run(self):
+    def test_check_workflow_uses_llm_for_ai_assisted_check_and_skips_actions_for_dry_run(self):
         workflow_instance = CheckWorkflow()
         execute_activity = AsyncMock(
             side_effect=[
@@ -676,7 +715,7 @@ class CheckWorkflowTests(SimpleTestCase):
         self.assertEqual(call_llm_args[3], "org-check-2")
         self.assertIn("structured assessment", call_llm_args[1][0]["content"])
 
-    def test_parse_llm_evaluation_normalizes_invalid_json_and_fallback_text(self):
+    def test_check_workflow_parse_llm_evaluation_normalizes_invalid_json_and_fallback_text(self):
         workflow_instance = CheckWorkflow()
 
         normalized = workflow_instance._parse_llm_evaluation(
@@ -689,6 +728,127 @@ class CheckWorkflowTests(SimpleTestCase):
         self.assertEqual(fallback["state"], "critical")
         self.assertEqual(fallback["confidence"], 0.5)
 
+    def test_check_workflow_evidence_split(self):
+        workflow_instance = CheckWorkflow()
+        context = {
+            "check_name": "API Health",
+            "execution_mode": "deterministic",
+            "evaluation_config": {
+                "capabilities": [
+                    {
+                        "name": "http_check",
+                        "parameters": {"url": "https://example.test/health"},
+                    }
+                ],
+                "rules": [{"path": "status", "op": "eq", "value": "ok"}],
+            },
+        }
+        execute_activity = AsyncMock(
+            side_effect=[
+                context,
+                {"id": "execution-evidence"},
+                {
+                    "success": True,
+                    "target_set_id": "target-set-evidence",
+                    "marvin_ids": ["marvin-1"],
+                    "policy_snapshot": {"max_targets": 1},
+                    "resolved_targets": {
+                        "target_set_id": "target-set-evidence",
+                        "snapshot": ["marvin-1"],
+                        "marvin_ids": ["marvin-1"],
+                    },
+                },
+                {"reserved": True},
+                [{"id": "cap-exec-evidence"}],
+                {"id": "cap-exec-evidence", "status": "running"},
+                {"status": "ok"},
+                {"id": "cap-exec-evidence", "status": "completed"},
+                {"released": True},
+                {"state": "healthy", "confidence": 0.95, "findings": [], "summary": "OK"},
+                {"id": "execution-evidence"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-evidence", "version-evidence"))
+
+        self.assertEqual(result["status"], "completed")
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        final_update = update_calls[-1].kwargs["args"]
+        eval_result = final_update[4]
+        self.assertNotIn("capabilities", eval_result)
+        self.assertNotIn("investigation_results", eval_result)
+        self.assertIn("findings", eval_result)
+        self.assertIn("summary", eval_result)
+        self.assertIn("confidence", eval_result)
+        evidence = final_update[5]
+        self.assertIn("capabilities", evidence)
+        self.assertEqual(evidence["capabilities"][0]["capability"], "http_check")
+        resolved = final_update[6]
+        self.assertIn("http_check", resolved)
+        self.assertEqual(resolved["http_check"]["marvin_ids"], ["marvin-1"])
+
+    def test_check_workflow_token_accumulators(self):
+        workflow_instance = CheckWorkflow()
+        execute_activity = AsyncMock(
+            side_effect=[
+                {
+                    "execution_mode": "ai_assisted",
+                    "evaluation_config": {},
+                    "llm_provider_id": "provider-tokens",
+                    "organization_id": "org-tokens",
+                },
+                {"id": "execution-tokens"},
+                {
+                    "content": (
+                        '```json\n{"state":"healthy","confidence":0.9,"findings":[],'
+                        '"summary":"OK"}\n```'
+                    ),
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cost": "0.05",
+                },
+                {"id": "execution-tokens"},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(
+                workflow_instance.run("check-tokens", "version-tokens", dry_run=True)
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["cumulative_input_tokens"], 100)
+        self.assertEqual(result["cumulative_output_tokens"], 50)
+        self.assertEqual(result["cumulative_tokens"], 150)
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        final_update = update_calls[-1].kwargs["args"]
+        eval_result = final_update[4]
+        self.assertEqual(eval_result["input_tokens"], 100)
+        self.assertEqual(eval_result["output_tokens"], 50)
+        self.assertEqual(eval_result["cost"], "0.05")
+
 
 class AutonomousInvestigationWorkflowTests(SimpleTestCase):
     def _check_context(self, **overrides):
@@ -696,7 +856,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             "check_name": "API Health",
             "investigation_goal": "Verify API health and gather evidence before deciding state",
             "instructions": "Use metrics first, then return the final JSON evaluation.",
-            "execution_budget": {"max_iterations": 4},
+            "execution_budget": {"max_executions_per_session": 4},
             "llm_provider_id": "provider-auto-1",
             "organization_id": "org-auto-1",
             "evaluation_config": {},
@@ -713,7 +873,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             "arguments": {"query": "up"},
         }
 
-    def test_run_executes_tools_and_returns_structured_evaluation(self):
+    def test_autonomous_run_executes_tools_and_returns_structured_evaluation(self):
         workflow_instance = AutonomousInvestigationWorkflow()
         tool_call = self._tool_call()
         tool_result = {"status": "up", "value": 1}
@@ -811,8 +971,9 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             if call.args[0] == "update_check_execution"
         ]
         self.assertEqual(update_calls[-1].kwargs["args"][2], "completed")
+        self.assertNotIn("investigation_results", update_calls[-1].kwargs["args"][4])
         self.assertEqual(
-            update_calls[-1].kwargs["args"][4]["investigation_results"],
+            update_calls[-1].kwargs["args"][5],
             result["investigation_results"],
         )
         self.assertEqual(
@@ -820,7 +981,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             ["session-1", "completed"],
         )
 
-    def test_run_marks_max_iterations_and_skips_actions_for_dry_run(self):
+    def test_autonomous_run_marks_max_iterations_and_skips_actions_for_dry_run(self):
         workflow_instance = AutonomousInvestigationWorkflow()
         tool_call = self._tool_call()
         execute_activity = AsyncMock(
@@ -829,7 +990,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
                     check_name="Disk",
                     investigation_goal="Check disk saturation",
                     instructions="Inspect disk metrics before deciding.",
-                    execution_budget={"max_iterations": 3},
+                    execution_budget={"max_executions_per_session": 3},
                 ),
                 {"id": "execution-2"},
                 {"session_id": "session-2", "thread_id": "thread-2"},
@@ -880,7 +1041,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             ["session-2", "completed"],
         )
 
-    def test_run_marks_session_failed_on_exception(self):
+    def test_autonomous_run_marks_session_failed_on_exception(self):
         workflow_instance = AutonomousInvestigationWorkflow()
         execute_activity = AsyncMock(
             side_effect=[
@@ -919,7 +1080,7 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
             ["session-3", "failed"],
         )
 
-    def test_run_calls_create_autonomous_session(self):
+    def test_autonomous_run_calls_create_autonomous_session(self):
         workflow_instance = AutonomousInvestigationWorkflow()
         execute_activity = AsyncMock(
             side_effect=[
@@ -969,7 +1130,133 @@ class AutonomousInvestigationWorkflowTests(SimpleTestCase):
         self.assertEqual(result["session_id"], "session-4")
         self.assertEqual(result["thread_id"], "thread-4")
 
-    def test_parse_evaluation_accepts_markdown_json_and_fallback_text(self):
+    def test_autonomous_evidence_split(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = self._tool_call()
+        tool_result = {"status": "up", "value": 1}
+        execute_activity = AsyncMock(
+            side_effect=[
+                self._check_context(),
+                {"id": "execution-evidence"},
+                {"session_id": "session-evidence", "thread_id": "thread-evidence"},
+                None,
+                {
+                    "content": "Need current metric evidence.",
+                    "tool_calls": [tool_call],
+                    "reasoning": "Check the up metric.",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cost": "0.02",
+                },
+                None,
+                None,
+                None,
+                {"db_tool_call_id": "db-tool-evidence", "result": tool_result},
+                None,
+                {"messages_created": True},
+                None,
+                None,
+                {
+                    "content": '{"state":"healthy","confidence":0.9,"findings":[],"summary":"OK"}',
+                    "tool_calls": [],
+                    "input_tokens": 20,
+                    "output_tokens": 10,
+                    "cost": "0.03",
+                },
+                {"id": "execution-evidence"},
+                {"session_id": "session-evidence", "status": "completed"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-evidence", "version-evidence"))
+
+        self.assertEqual(result["status"], "completed")
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        final_update = update_calls[-1].kwargs["args"]
+        eval_result = final_update[4]
+        self.assertNotIn("investigation_results", eval_result)
+        self.assertIn("findings", eval_result)
+        self.assertIn("summary", eval_result)
+        self.assertIn("confidence", eval_result)
+        evidence = final_update[5]
+        self.assertIsInstance(evidence, list)
+        self.assertEqual(evidence[0]["iteration"], 0)
+        self.assertEqual(evidence[0]["tool_calls"][0]["result"], tool_result)
+
+    def test_autonomous_token_accumulators(self):
+        workflow_instance = AutonomousInvestigationWorkflow()
+        tool_call = self._tool_call()
+        execute_activity = AsyncMock(
+            side_effect=[
+                self._check_context(),
+                {"id": "execution-acc"},
+                {"session_id": "session-acc", "thread_id": "thread-acc"},
+                None,
+                {
+                    "content": "First tool call.",
+                    "tool_calls": [tool_call],
+                    "input_tokens": 50,
+                    "output_tokens": 25,
+                    "cost": "0.02",
+                },
+                None,
+                None,
+                None,
+                {"db_tool_call_id": "db-tool-acc", "result": {"data": 1}},
+                None,
+                {"messages_created": True},
+                None,
+                {
+                    "content": (
+                        '{"state":"degraded","confidence":0.7,"findings":[],"summary":"Slow"}'
+                    ),
+                    "tool_calls": [],
+                    "input_tokens": 50,
+                    "output_tokens": 25,
+                    "cost": "0.03",
+                },
+                {"id": "execution-acc"},
+                {"session_id": "session-acc", "status": "completed"},
+                {"dispatched": True},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            result = asyncio.run(workflow_instance.run("check-acc", "version-acc"))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["cumulative_input_tokens"], 100)
+        self.assertEqual(result["cumulative_output_tokens"], 50)
+        self.assertEqual(result["cumulative_tokens"], 150)
+        update_calls = [
+            call
+            for call in execute_activity.await_args_list
+            if call.args[0] == "update_check_execution"
+        ]
+        final_update = update_calls[-1].kwargs["args"]
+        eval_result = final_update[4]
+        self.assertEqual(eval_result["input_tokens"], 100)
+        self.assertEqual(eval_result["output_tokens"], 50)
+
+    def test_autonomous_parse_evaluation_accepts_markdown_json_and_fallback_text(self):
         workflow_instance = AutonomousInvestigationWorkflow()
 
         parsed = workflow_instance._parse_evaluation(
@@ -1417,6 +1704,221 @@ class TemporalActivityTests(TransactionTestCase):
         )
 
         mock_get_client.assert_called_once_with(str(organization.id), str(check_provider.id))
+
+
+def _create_fanout_fixture(slug="fanout"):
+    from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
+
+    user = User.objects.create_user(username=f"{slug}_user", password="pass")
+    organization = Organization.objects.create(name=f"{slug.title()} Org", slug=f"{slug}-org")
+    session = TSession.objects.create(
+        organization=organization,
+        title=f"{slug.title()} Session",
+        created_by=user,
+    )
+    thread = Thread.objects.create(tsession=session, user=user)
+    capability = Capability.objects.create(
+        organization=organization,
+        name=f"{slug}.check",
+        selection_strategy="all",
+    )
+    marvins = [
+        Marvin.objects.create(
+            organization=organization,
+            name=f"{slug}-marvin-{index}",
+            client_id=f"{slug}-client-{index}",
+            status=Marvin.Status.ONLINE,
+            labels=["env:prod", f"node:{index}"],
+        )
+        for index in range(2)
+    ]
+    for marvin in marvins:
+        marvin.capabilities.add(capability)
+    target_set = ResolvedTargetSet.objects.create(
+        organization=organization,
+        capability=capability,
+        selector={"labels": {"env": "prod"}},
+        snapshot=[str(marvin.id) for marvin in marvins],
+        snapshot_metadata={"count": len(marvins)},
+        expires_at=timezone.now(),
+    )
+    return user, organization, session, thread, capability, marvins, target_set
+
+
+class TemporalFanoutActivityTests(TransactionTestCase):
+    def test_route_and_execute_resolves_targets_and_creates_fanout_tool_call(self):
+        _user, organization, _session, thread, capability, marvins, target_set = (
+            _create_fanout_fixture("routefanout")
+        )
+        policy = Mock()
+        policy.model_dump.return_value = {"max_targets": 2, "mode": "characterized"}
+
+        with patch("apps.marvins.discovery.DiscoveryEngine") as discovery_engine:
+            engine = discovery_engine.return_value
+            engine.resolve_targets.return_value = target_set
+            engine.check_execution_policy.return_value = (policy, Mock())
+
+            tool_call, marvin_ids, error = _route_and_execute(
+                organization,
+                thread,
+                {
+                    "capability_name": capability.name,
+                    "labels": "env:prod",
+                    "parameters": {"path": "/var/log/app.log"},
+                    "timeout_seconds": 45,
+                },
+            )
+
+        assert error is None
+        assert marvin_ids == [str(marvin.id) for marvin in marvins]
+        assert tool_call.capability == capability
+        assert tool_call.thread == thread
+        assert tool_call.parameters == {"path": "/var/log/app.log"}
+        assert tool_call.labels == {"env": "prod"}
+        assert tool_call.marvin == marvins[0]
+        assert tool_call.timeout_seconds == 45
+        assert tool_call.status == ToolCall.Status.IN_PROGRESS
+        assert tool_call.target_set == target_set
+        assert tool_call.execution_mode == "fanout"
+        assert tool_call.policy_snapshot == {"max_targets": 2, "mode": "characterized"}
+        engine.resolve_targets.assert_called_once()
+        engine.check_execution_policy.assert_called_once_with(
+            organization,
+            capability,
+            2,
+            session=thread.tsession,
+        )
+
+    def test_route_and_execute_empty_target_set_returns_error_without_tool_call(self):
+        _user, organization, _session, thread, capability, _marvins, target_set = (
+            _create_fanout_fixture("emptyfanout")
+        )
+        target_set.snapshot = []
+        target_set.save(update_fields=["snapshot"])
+        policy = Mock()
+        policy.model_dump.return_value = {"max_targets": 2}
+
+        with (
+            patch("apps.marvins.discovery.DiscoveryEngine") as discovery_engine,
+            patch("apps.sessions.budget.release_execution_budget") as release_budget,
+        ):
+            engine = discovery_engine.return_value
+            engine.resolve_targets.return_value = target_set
+            engine.check_execution_policy.return_value = (policy, Mock())
+
+            tool_call, marvin_ids, error = _route_and_execute(
+                organization,
+                thread,
+                {"capability_name": capability.name, "labels": "env:prod"},
+            )
+
+        assert tool_call is None
+        assert marvin_ids == []
+        assert error == {
+            "error": (
+                f"No online Marvin found for capability '{capability.name}' with matching labels"
+            )
+        }
+        assert ToolCall.objects.count() == 0
+        release_budget.assert_called_once_with(thread.tsession, 0)
+
+    def test_create_executions_creates_pending_rows_in_result_index_order(self):
+        _user, _organization, _session, thread, capability, marvins, _target_set = (
+            _create_fanout_fixture("executionfanout")
+        )
+        tool_call = ToolCall.objects.create(
+            thread=thread,
+            capability=capability,
+            status=ToolCall.Status.IN_PROGRESS,
+            execution_mode="fanout",
+        )
+
+        result = _create_executions(str(tool_call.id), [str(marvin.id) for marvin in marvins])
+
+        executions = list(Execution.objects.filter(tool_call=tool_call).order_by("result_index"))
+        assert result == [{"id": str(execution.id)} for execution in executions]
+        assert [execution.result_index for execution in executions] == [0, 1]
+        assert [execution.status for execution in executions] == [
+            Execution.Status.PENDING,
+            Execution.Status.PENDING,
+        ]
+        assert [execution.tool_call_id for execution in executions] == [tool_call.id, tool_call.id]
+        assert [execution.marvin_id for execution in executions] == [None, None]
+
+    def test_execute_llm_tool_fanout_aggregates_partial_failures_with_exact_shape(self):
+        _user, organization, _session, thread, capability, marvins, target_set = (
+            _create_fanout_fixture("aggregatefanout")
+        )
+        policy = Mock()
+        policy.model_dump.return_value = {"max_targets": 2}
+
+        async def execute_side_effect(*args, **kwargs):
+            result_index = kwargs["result_index"]
+            if result_index == 1:
+                raise RuntimeError("marvin exploded")
+            return {"stdout": "healthy", "target": args[4], "index": result_index}
+
+        with (
+            patch("apps.marvins.discovery.DiscoveryEngine") as discovery_engine,
+            patch("apps.sessions.budget.release_execution_budget") as release_budget,
+            patch(
+                "services.temporal_workers.activities.execute_capability",
+                new=AsyncMock(side_effect=execute_side_effect),
+            ) as execute_capability_mock,
+        ):
+            engine = discovery_engine.return_value
+            engine.resolve_targets.return_value = target_set
+            engine.check_execution_policy.return_value = (policy, Mock())
+
+            result = asyncio.run(
+                execute_llm_tool(
+                    str(thread.id),
+                    {
+                        "name": "execute_tool",
+                        "arguments": {
+                            "capability_name": capability.name,
+                            "labels": "env:prod",
+                            "parameters": {"service": "api"},
+                        },
+                    },
+                    None,
+                )
+            )
+
+        expected_aggregation = {
+            "success": False,
+            "results": [
+                {
+                    "index": 0,
+                    "marvin_id": str(marvins[0].id),
+                    "result": {
+                        "stdout": "healthy",
+                        "target": str(marvins[0].id),
+                        "index": 0,
+                    },
+                }
+            ],
+            "errors": [{"index": 1, "marvin_id": str(marvins[1].id), "error": "marvin exploded"}],
+            "summary": {"total": 2, "succeeded": 1, "failed": 1},
+        }
+        assert set(result.keys()) == {"db_tool_call_id", "result"}
+        assert result["result"] == expected_aggregation
+        tool_call = ToolCall.objects.get(id=result["db_tool_call_id"])
+        assert tool_call.result == expected_aggregation
+        assert tool_call.status == ToolCall.Status.COMPLETED
+        executions = list(Execution.objects.filter(tool_call=tool_call).order_by("result_index"))
+        assert [execution.status for execution in executions] == [
+            Execution.Status.COMPLETED,
+            Execution.Status.FAILED,
+        ]
+        assert executions[0].result == {
+            "stdout": "healthy",
+            "target": str(marvins[0].id),
+            "index": 0,
+        }
+        assert executions[1].error_message == "marvin exploded"
+        assert execute_capability_mock.await_count == 2
+        release_budget.assert_called_once_with(thread.tsession, 2)
 
 
 class AgentErrorTests(TransactionTestCase):

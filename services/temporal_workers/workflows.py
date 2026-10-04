@@ -16,7 +16,7 @@ from temporalio.exceptions import ApplicationError
 MAX_PARALLEL_TOOL_CALLS = 6
 
 with workflow.unsafe.imports_passed_through():
-    pass
+    from services.temporal_workers import fanout
 
 
 @workflow.defn
@@ -554,6 +554,8 @@ class CheckWorkflow:
             "status": "pending",
             "mode": None,
             "cumulative_tokens": 0,
+            "cumulative_input_tokens": 0,
+            "cumulative_output_tokens": 0,
             "cumulative_cost": "0.00",
             "last_failure_reason": None,
             "last_failure_detail": None,
@@ -599,52 +601,147 @@ class CheckWorkflow:
 
         try:
             capability_results = []
+            resolved_targets: dict[str, Any] = {}
             capabilities = context.get("evaluation_config", {}).get("capabilities", [])
             if capabilities:
                 self.state["status"] = "executing_capabilities"
 
-                async def execute_one_capability(cap_config: dict) -> dict:
+                async def execute_one_capability_fanout(cap_config: dict) -> dict:
+                    capability_name = cap_config["name"]
+                    selector = cap_config.get("selector", {})
                     try:
-                        result = await workflow.execute_activity(
-                            "execute_capability",
-                            args=[
-                                check_id,
-                                self.state["execution_id"],
-                                cap_config["name"],
-                                cap_config.get("parameters", {}),
-                                cap_config.get("marvin_id", ""),
-                            ],
-                            start_to_close_timeout=timedelta(minutes=5),
+                        target_resolution = await workflow.execute_activity(
+                            "resolve_check_capability_targets",
+                            args=[check_id, capability_name, selector],
+                            start_to_close_timeout=timedelta(seconds=30),
                             retry_policy=RetryPolicy(
                                 initial_interval=timedelta(seconds=1),
-                                maximum_interval=timedelta(seconds=30),
+                                maximum_interval=timedelta(seconds=5),
                                 maximum_attempts=3,
                             ),
                         )
-                        return {"capability": cap_config["name"], "success": True, "result": result}
+                        if not target_resolution.get("success"):
+                            return {
+                                "capability": capability_name,
+                                "success": False,
+                                "error": target_resolution.get("error", "Target resolution failed"),
+                            }
+
+                        marvin_ids = target_resolution.get("marvin_ids", [])
+                        target_snapshot = target_resolution.get("resolved_targets", {})
+                        resolved_targets[capability_name] = target_snapshot
+
+                        await workflow.execute_activity(
+                            "reserve_check_execution_budget",
+                            args=[check_id, len(marvin_ids)],
+                            start_to_close_timeout=timedelta(seconds=30),
+                        )
+                        try:
+                            executions = await workflow.execute_activity(
+                                "create_check_capability_executions",
+                                args=[
+                                    self.state["execution_id"],
+                                    marvin_ids,
+                                    capability_name,
+                                    target_resolution.get("target_set_id"),
+                                    target_resolution.get("policy_snapshot", {}),
+                                ],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+
+                            async def execute_capability_on_marvin(
+                                session_id: str,
+                                thread_id: str,
+                                fanout_capability_name: str,
+                                parameters: dict,
+                                marvin_id: str,
+                                *,
+                                target_set_id: str | None = None,
+                                execution_mode: str | None = None,
+                                result_index: int = 0,
+                            ) -> dict:
+                                return await workflow.execute_activity(
+                                    "execute_capability",
+                                    args=[
+                                        session_id,
+                                        thread_id,
+                                        fanout_capability_name,
+                                        parameters,
+                                        marvin_id,
+                                        None,
+                                        target_set_id,
+                                        execution_mode,
+                                        result_index,
+                                    ],
+                                    start_to_close_timeout=timedelta(minutes=5),
+                                    retry_policy=RetryPolicy(
+                                        initial_interval=timedelta(seconds=1),
+                                        maximum_interval=timedelta(seconds=30),
+                                        maximum_attempts=3,
+                                    ),
+                                )
+
+                            async def update_capability_execution_status(
+                                execution_id: str,
+                                status: str,
+                                result: dict | None,
+                                error: str | None,
+                            ) -> None:
+                                await workflow.execute_activity(
+                                    "update_check_capability_execution",
+                                    args=[execution_id, status, result, error],
+                                    start_to_close_timeout=timedelta(seconds=30),
+                                )
+
+                            execution_results = await fanout.execute_fanout(
+                                marvin_ids,
+                                capability_name,
+                                cap_config.get("parameters", {}),
+                                execute_capability=execute_capability_on_marvin,
+                                execution_ids=[execution["id"] for execution in executions],
+                                update_status=update_capability_execution_status,
+                                session_id=check_id,
+                                thread_id=self.state["execution_id"],
+                                target_set_id=target_resolution.get("target_set_id"),
+                                execution_mode="fanout" if len(marvin_ids) > 1 else "single",
+                            )
+                        finally:
+                            await workflow.execute_activity(
+                                "release_check_execution_budget",
+                                args=[check_id, len(marvin_ids)],
+                                start_to_close_timeout=timedelta(seconds=30),
+                            )
+
+                        aggregated = fanout.aggregate_results(execution_results)
+                        return {
+                            "capability": capability_name,
+                            "success": aggregated["success"],
+                            "result": aggregated,
+                        }
                     except Exception as exc:
                         return {
-                            "capability": cap_config["name"],
+                            "capability": capability_name,
                             "success": False,
                             "error": str(exc),
                         }
 
                 capability_results = await asyncio.gather(
-                    *(execute_one_capability(capability) for capability in capabilities)
+                    *(execute_one_capability_fanout(capability) for capability in capabilities)
                 )
+
+            evidence = {
+                "capabilities": capability_results,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
 
             evaluation_config = context.get("evaluation_config", {})
 
             if self.state["mode"] == "deterministic":
                 self.state["status"] = "evaluating"
                 rules = evaluation_config.get("rules", [])
-                execution_result = {
-                    "capabilities": capability_results,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
                 evaluation = await workflow.execute_activity(
                     "evaluate_check",
-                    args=[check_id, execution_result, rules],
+                    args=[check_id, evidence, rules],
                     start_to_close_timeout=timedelta(seconds=30),
                 )
             else:
@@ -660,7 +757,7 @@ class CheckWorkflow:
                 )
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps({"capabilities": capability_results})},
+                    {"role": "user", "content": json.dumps(evidence)},
                 ]
                 resp = await workflow.execute_activity(
                     "call_llm",
@@ -678,9 +775,11 @@ class CheckWorkflow:
                     ),
                 )
                 evaluation = self._parse_llm_evaluation(resp.get("content", ""))
-                self.state["cumulative_tokens"] += resp.get("input_tokens", 0) + resp.get(
-                    "output_tokens", 0
-                )
+                input_tokens = resp.get("input_tokens", 0)
+                output_tokens = resp.get("output_tokens", 0)
+                self.state["cumulative_input_tokens"] += input_tokens
+                self.state["cumulative_output_tokens"] += output_tokens
+                self.state["cumulative_tokens"] += input_tokens + output_tokens
                 self.state["cumulative_cost"] = str(
                     Decimal(self.state["cumulative_cost"]) + Decimal(str(resp.get("cost", "0.00")))
                 )
@@ -696,11 +795,12 @@ class CheckWorkflow:
                         "findings": evaluation.get("findings", []),
                         "summary": evaluation.get("summary", ""),
                         "confidence": evaluation.get("confidence", 0.5),
-                        "capabilities": capability_results,
-                        "input_tokens": self.state["cumulative_tokens"],
-                        "output_tokens": self.state["cumulative_tokens"],
+                        "input_tokens": self.state["cumulative_input_tokens"],
+                        "output_tokens": self.state["cumulative_output_tokens"],
                         "cost": self.state["cumulative_cost"],
                     },
+                    evidence,
+                    resolved_targets,
                 ],
                 start_to_close_timeout=timedelta(seconds=30),
             )
@@ -788,6 +888,8 @@ class AutonomousInvestigationWorkflow:
             "status": "pending",
             "iteration_count": 0,
             "cumulative_tokens": 0,
+            "cumulative_input_tokens": 0,
+            "cumulative_output_tokens": 0,
             "cumulative_cost": "0.00",
             "cumulative_context_tokens": 0,
             "last_failure_reason": None,
@@ -856,7 +958,7 @@ class AutonomousInvestigationWorkflow:
                     "status": "investigating",
                     "max_iterations": int(
                         max_iterations
-                        or context.get("execution_budget", {}).get("max_iterations", 8)
+                        or context.get("execution_budget", {}).get("max_executions_per_session", 8)
                     ),
                 }
             )
@@ -921,7 +1023,11 @@ class AutonomousInvestigationWorkflow:
                         maximum_attempts=3,
                     ),
                 )
-                self._track_llm_usage(resp)
+                self._track_llm_usage(
+                    resp,
+                    resp.get("input_tokens", 0),
+                    resp.get("output_tokens", 0),
+                )
 
                 if resp.get("reasoning"):
                     await workflow.execute_activity(
@@ -1075,6 +1181,7 @@ class AutonomousInvestigationWorkflow:
                 )
 
             self.state["status"] = "ai_evaluating"
+            self.state["investigation_results"] = investigation_results
             evaluation = self._parse_evaluation(final_content)
             await workflow.execute_activity(
                 "update_check_execution",
@@ -1087,11 +1194,11 @@ class AutonomousInvestigationWorkflow:
                         "findings": evaluation["findings"],
                         "summary": evaluation.get("summary", ""),
                         "confidence": evaluation.get("confidence", 0.5),
-                        "investigation_results": investigation_results,
-                        "input_tokens": self.state["cumulative_tokens"],
-                        "output_tokens": self.state["cumulative_tokens"],
+                        "input_tokens": self.state["cumulative_input_tokens"],
+                        "output_tokens": self.state["cumulative_output_tokens"],
                         "cost": self.state["cumulative_cost"],
                     },
+                    self.state["investigation_results"],
                 ],
                 start_to_close_timeout=timedelta(seconds=30),
             )
@@ -1136,10 +1243,10 @@ class AutonomousInvestigationWorkflow:
                 )
             raise
 
-    def _track_llm_usage(self, resp: dict) -> None:
-        input_tokens = resp.get("input_tokens", 0)
-        output_tokens = resp.get("output_tokens", 0)
+    def _track_llm_usage(self, resp: dict, input_tokens: int, output_tokens: int) -> None:
         total_tokens = input_tokens + output_tokens
+        self.state["cumulative_input_tokens"] += input_tokens
+        self.state["cumulative_output_tokens"] += output_tokens
         self.state["cumulative_tokens"] += total_tokens
         self.state["cumulative_context_tokens"] += total_tokens
         self.state["cumulative_cost"] = str(

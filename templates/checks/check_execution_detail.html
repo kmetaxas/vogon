@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load money_tags %}
 {% block title %}Execution {{ execution.id }} — {{ check.name }}{% endblock %}
 {% block content %}
 <div class="container">
@@ -47,7 +48,7 @@
             </div>
             <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Cost</div>
-                <div>${{ execution.cost }}</div>
+                <div>{{ execution.cost|money }}</div>
             </div>
             <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Tokens</div>
@@ -127,8 +128,54 @@
 
     <div class="card" style="margin-bottom:var(--spacing-lg);">
         <h2 class="card-title">Evidence</h2>
-        <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5; margin-top:var(--spacing-md);">{{ execution.evidence|pprint }}</pre>
+        <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5; margin-top:var(--spacing-md);">
+{% if execution.evidence %}
+{{ execution.evidence|pprint }}
+{% elif execution.evaluation_result.capabilities %}
+{{ execution.evaluation_result.capabilities|pprint }}
+{% elif execution.evaluation_result.investigation_results %}
+{{ execution.evaluation_result.investigation_results|pprint }}
+{% else %}
+{}
+{% endif %}
+        </pre>
     </div>
+
+    {% if execution.capability_executions.exists %}
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Capability Executions</h2>
+        <div style="margin-top:var(--spacing-md);">
+            <table class="table" style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--color-border);">
+                        <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Capability</th>
+                        <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Marvin</th>
+                        <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Status</th>
+                        <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Tokens</th>
+                        <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cap_exec in execution.capability_executions.all %}
+                    <tr style="border-bottom:1px solid var(--color-border);">
+                        <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ cap_exec.capability_name }}</td>
+                        <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ cap_exec.marvin.name|default:"—" }}</td>
+                        <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                            {% if cap_exec.status == 'completed' %}<span class="badge badge-success">{{ cap_exec.get_status_display }}</span>
+                            {% elif cap_exec.status == 'running' %}<span class="badge badge-active">{{ cap_exec.get_status_display }}</span>
+                            {% elif cap_exec.status == 'failed' %}<span class="badge badge-danger">{{ cap_exec.get_status_display }}</span>
+                            {% else %}<span class="badge badge-secondary">{{ cap_exec.get_status_display }}</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ cap_exec.input_tokens|add:cap_exec.output_tokens }} ({{ cap_exec.input_tokens }} in / {{ cap_exec.output_tokens }} out)</td>
+                        <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ cap_exec.cost|money }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="card" style="margin-bottom:var(--spacing-lg);">
         <h2 class="card-title">Resolved Targets</h2>

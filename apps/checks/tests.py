@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
@@ -17,12 +18,18 @@ from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthStat
 from apps.checks.models import (
     Check,
     CheckActionLog,
+    CheckCapabilityExecution,
     CheckExecution,
     CheckHealthState,
     CheckVersion,
 )
 from apps.core.models import Organization, OrganizationMembership, User
-from services.temporal_workers.activities import call_llm, dispatch_actions
+from services.temporal_workers.activities import (
+    call_llm,
+    create_check_capability_executions,
+    dispatch_actions,
+    update_check_capability_execution,
+)
 
 
 def _make_check(organization, name="Check", **kwargs):
@@ -1547,6 +1554,145 @@ class CheckScheduleValidationTests(TestCase):
         check.clean()
 
 
+class CheckSelectorValidationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="sel_user", password="pass")
+        self.organization = Organization.objects.create(name="Sel Org", slug="sel-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def _check(self, evaluation_config):
+        return Check(
+            organization=self.organization,
+            name="Selector Check",
+            schedule_type=Check.ScheduleType.INTERVAL,
+            schedule_expression="60",
+            execution_mode=Check.ExecutionMode.DETERMINISTIC,
+            evaluation_config=evaluation_config,
+        )
+
+    def test_check_selector_validation_model_accepts_with_and_without_selector(self):
+        from django.core.exceptions import ValidationError
+
+        without = self._check({"capabilities": [{"name": "cpu.check", "parameters": {}}]})
+        without.clean()
+
+        with_selector = self._check(
+            {
+                "capabilities": [
+                    {
+                        "name": "cpu.check",
+                        "parameters": {},
+                        "marvin_id": "",
+                        "selector": {
+                            "hostname": "web-1",
+                            "region": ["us-east-1"],
+                            "labels": {"env": "prod"},
+                            "resource_ids": ["res-1"],
+                            "marvin_ids": ["m-1"],
+                        },
+                    }
+                ]
+            }
+        )
+        with_selector.clean()
+
+        empty_selector = self._check({"capabilities": [{"name": "cpu.check", "selector": {}}]})
+        empty_selector.clean()
+
+        bad = self._check(
+            {"capabilities": [{"name": "cpu.check", "selector": {"unknown_key": "x"}}]}
+        )
+        with self.assertRaises(ValidationError):
+            bad.clean()
+
+        bad_type = self._check(
+            {"capabilities": [{"name": "cpu.check", "selector": {"hostname": 123}}]}
+        )
+        with self.assertRaises(ValidationError):
+            bad_type.clean()
+
+    def test_check_selector_validation_serializer_accepts_with_and_without_selector(self):
+        from apps.checks.serializers import CheckSerializer
+
+        base = {
+            "organization": str(self.organization.id),
+            "name": "Serializer Selector Check",
+            "schedule_type": Check.ScheduleType.INTERVAL,
+            "schedule_expression": "60",
+            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+        }
+
+        without = CheckSerializer(
+            data={**base, "evaluation_config": {"capabilities": [{"name": "cpu.check"}]}}
+        )
+        self.assertTrue(without.is_valid(), without.errors)
+
+        with_selector = CheckSerializer(
+            data={
+                **base,
+                "evaluation_config": {
+                    "capabilities": [{"name": "cpu.check", "selector": {"labels": {"env": "prod"}}}]
+                },
+            }
+        )
+        self.assertTrue(with_selector.is_valid(), with_selector.errors)
+
+        bad = CheckSerializer(
+            data={
+                **base,
+                "evaluation_config": {
+                    "capabilities": [{"name": "cpu.check", "selector": {"bogus": "x"}}]
+                },
+            }
+        )
+        self.assertFalse(bad.is_valid())
+
+    def test_check_selector_validation_view_preserves_selector(self):
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "View Selector Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": (
+                    '{"capabilities": [{"name": "cpu.check", "parameters": {}, '
+                    '"marvin_id": "", "selector": {"hostname": "web-1", '
+                    '"labels": {"env": "prod"}}}]}'
+                ),
+                "notification_config": "{}",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check = Check.objects.get(name="View Selector Check")
+        selector = check.evaluation_config["capabilities"][0]["selector"]
+        self.assertEqual(selector["hostname"], "web-1")
+        self.assertEqual(selector["labels"], {"env": "prod"})
+
+    def test_check_selector_validation_view_rejects_bad_selector(self):
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Bad Selector Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+                "evaluation_config": (
+                    '{"capabilities": [{"name": "cpu.check", "selector": {"hostname": 123}}]}'
+                ),
+                "notification_config": "{}",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "hostname")
+        self.assertFalse(Check.objects.filter(name="Bad Selector Check").exists())
+
+
 class DispatchActionsActivityTests(TransactionTestCase):
     def setUp(self):
         self.organization = Organization.objects.create(name="DA Org", slug="da-org")
@@ -1607,24 +1753,11 @@ class CallLLMNoThreadTests(TransactionTestCase):
         mock_get_client.assert_called_once_with(str(organization.id), None)
 
 
-class CheckSchedulerResilienceTests(TestCase):
+class CheckExecutionActivityTests(TransactionTestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="res_user", password="pass")
-        self.organization = Organization.objects.create(name="Res Org", slug="res-org")
-        OrganizationMembership.objects.create(
-            user=self.user,
-            organization=self.organization,
-            role=OrganizationMembership.Role.OWNER,
+        self.organization = Organization.objects.create(
+            name="Exec Org", slug=f"exec-org-{uuid.uuid4().hex[:8]}"
         )
-        self.client.force_login(self.user)
-
-    def test_load_check_context_returns_error_sentinel_when_missing(self):
-        from services.temporal_workers.activities import load_check_context
-
-        fake_id = str(uuid.uuid4())
-        result = asyncio.run(load_check_context(fake_id, ""))
-        self.assertEqual(result["error"], "Check not found")
-        self.assertEqual(result["check_id"], fake_id)
 
     def test_update_check_execution_creates_when_execution_id_is_none(self):
         from services.temporal_workers.activities import update_check_execution
@@ -1646,6 +1779,128 @@ class CheckSchedulerResilienceTests(TestCase):
                 execution_status=CheckExecution.ExecutionStatus.COMPLETED,
             ).exists()
         )
+
+    def test_check_execution_timestamps(self):
+        from services.temporal_workers.activities import update_check_execution
+
+        check = _make_check(self.organization, name="Timestamp Check")
+
+        create_result = asyncio.run(
+            update_check_execution(
+                check_id=str(check.id),
+                execution_id=None,
+                status="running",
+                health_state="unknown",
+                result={},
+            )
+        )
+        execution = CheckExecution.objects.get(id=create_result["id"])
+        self.assertIsNotNone(execution.started_at)
+        self.assertIsNone(execution.completed_at)
+
+        asyncio.run(
+            update_check_execution(
+                check_id=str(check.id),
+                execution_id=str(execution.id),
+                status="completed",
+                health_state="healthy",
+                result={"ok": True},
+            )
+        )
+        execution.refresh_from_db()
+        self.assertIsNotNone(execution.started_at)
+        self.assertIsNotNone(execution.completed_at)
+
+    def test_check_execution_cost_preserved_on_fail(self):
+        from services.temporal_workers.activities import update_check_execution
+
+        check = _make_check(self.organization, name="Cost Preserve Check")
+        create_result = asyncio.run(
+            update_check_execution(
+                check_id=str(check.id),
+                execution_id=None,
+                status="running",
+                health_state="unknown",
+                result={"input_tokens": 10, "output_tokens": 5, "cost": "1.23"},
+            )
+        )
+        execution = CheckExecution.objects.get(id=create_result["id"])
+        self.assertEqual(execution.cost, Decimal("1.23"))
+        self.assertEqual(execution.input_tokens, 10)
+        self.assertEqual(execution.output_tokens, 5)
+
+        asyncio.run(
+            update_check_execution(
+                check_id=str(check.id),
+                execution_id=str(execution.id),
+                status="failed",
+                health_state="critical",
+                result={"error": "boom"},
+            )
+        )
+        execution.refresh_from_db()
+        self.assertEqual(execution.cost, Decimal("1.23"))
+        self.assertEqual(execution.input_tokens, 10)
+        self.assertEqual(execution.output_tokens, 5)
+        self.assertIsNotNone(execution.completed_at)
+
+
+class CheckCapabilityExecutionModelTests(TestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="CapExec Org", slug=f"capexec-org-{uuid.uuid4().hex[:8]}"
+        )
+
+    def test_defaults_and_org_scoping(self):
+        check = _make_check(self.organization, name="CapExec Check")
+        execution = CheckExecution.objects.create(check=check)
+        cap_exec = CheckCapabilityExecution.objects.create(
+            check_execution=execution,
+            capability_name="kubernetes.get_logs",
+        )
+        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
+        self.assertEqual(cap_exec.result_json, {})
+        self.assertEqual(cap_exec.input_tokens, 0)
+        self.assertEqual(cap_exec.output_tokens, 0)
+        self.assertEqual(cap_exec.cost, Decimal("0.00"))
+        self.assertIsNone(cap_exec.marvin)
+        self.assertIsNone(cap_exec.target_set)
+        self.assertIsNone(cap_exec.started_at)
+        self.assertIsNone(cap_exec.completed_at)
+        self.assertIsNotNone(cap_exec.created_at)
+        self.assertEqual(cap_exec.check_execution.check.organization, self.organization)
+        self.assertFalse(hasattr(cap_exec, "organization_id"))
+
+    def test_related_name_and_cascade(self):
+        check = _make_check(self.organization, name="CapExec Cascade")
+        execution = CheckExecution.objects.create(check=check)
+        CheckCapabilityExecution.objects.create(
+            check_execution=execution,
+            capability_name="network.ping",
+        )
+        self.assertEqual(execution.capability_executions.count(), 1)
+        execution.delete()
+        self.assertEqual(CheckCapabilityExecution.objects.count(), 0)
+
+
+class CheckSchedulerResilienceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="res_user", password="pass")
+        self.organization = Organization.objects.create(name="Res Org", slug="res-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def test_load_check_context_returns_error_sentinel_when_missing(self):
+        from services.temporal_workers.activities import load_check_context
+
+        fake_id = str(uuid.uuid4())
+        result = asyncio.run(load_check_context(fake_id, ""))
+        self.assertEqual(result["error"], "Check not found")
+        self.assertEqual(result["check_id"], fake_id)
 
     @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
     def test_create_schedule_skips_disabled_checks(self, mock_get_client):
@@ -1760,3 +2015,305 @@ class CheckSchedulerResilienceTests(TestCase):
         execution = CheckExecution.objects.create(check=other_check)
         response = self.client.get(f"/checks/{other_check.id}/executions/{execution.id}/")
         self.assertEqual(response.status_code, 404)
+
+
+class CheckBudgetMigrationTests(TransactionTestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="Budget Org", slug=f"budget-org-{uuid.uuid4().hex[:8]}"
+        )
+
+    def test_check_budget_migration_legacy_max_iterations(self):
+
+        check = _make_check(self.organization, name="Legacy Budget")
+        check.execution_budget = {"max_iterations": 8}
+        check.save(update_fields=["execution_budget"])
+
+        call_command("migrate", "checks", "0004")
+        call_command("migrate", "checks", "0005")
+
+        check.refresh_from_db()
+        self.assertEqual(check.execution_budget["max_executions_per_session"], 8)
+        self.assertEqual(check.execution_budget["executions_used"], 0)
+        self.assertEqual(check.execution_budget["max_targets_per_session"], 200)
+        self.assertNotIn("max_iterations", check.execution_budget)
+
+    def test_check_budget_migration_defaults_for_empty(self):
+        check = _make_check(self.organization, name="Empty Budget")
+        check.execution_budget = {}
+        check.save(update_fields=["execution_budget"])
+
+        call_command("migrate", "checks", "0004")
+        call_command("migrate", "checks", "0005")
+
+        check.refresh_from_db()
+        self.assertEqual(check.execution_budget["max_executions_per_session"], 100)
+        self.assertEqual(check.execution_budget["executions_used"], 0)
+
+    def test_check_budget_migration_reverse(self):
+        check = _make_check(self.organization, name="Reverse Budget")
+        check.execution_budget = {"max_executions_per_session": 12}
+        check.save(update_fields=["execution_budget"])
+
+        call_command("migrate", "checks", "0005")
+        call_command("migrate", "checks", "0004")
+
+        check.refresh_from_db()
+        self.assertEqual(check.execution_budget["max_iterations"], 12)
+
+    def test_check_model_clean_normalizes_legacy_budget(self):
+        check = _make_check(self.organization, name="Clean Legacy")
+        check.execution_budget = {"max_iterations": 5}
+        check.clean()
+        self.assertEqual(check.execution_budget["max_executions_per_session"], 5)
+        self.assertNotIn("max_iterations", check.execution_budget)
+
+    def test_check_model_clean_defaults_empty_budget(self):
+        check = _make_check(self.organization, name="Clean Empty")
+        check.execution_budget = {}
+        check.clean()
+        self.assertEqual(check.execution_budget["max_executions_per_session"], 100)
+        self.assertEqual(check.execution_budget["executions_used"], 0)
+
+    def test_check_serializer_normalizes_legacy_budget(self):
+        from apps.checks.serializers import CheckSerializer
+
+        data = {
+            "organization": str(self.organization.id),
+            "name": "Serializer Legacy",
+            "schedule_type": Check.ScheduleType.INTERVAL,
+            "schedule_expression": "60",
+            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
+            "execution_budget": {"max_iterations": 7},
+        }
+        serializer = CheckSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(
+            serializer.validated_data["execution_budget"]["max_executions_per_session"], 7
+        )
+
+    def test_load_check_context_returns_sessionbudget_format(self):
+        from services.temporal_workers.activities import load_check_context
+
+        check = _make_check(self.organization, name="Context Budget")
+        check.execution_budget = {"max_iterations": 3}
+        check.save(update_fields=["execution_budget"])
+
+        result = asyncio.run(load_check_context(str(check.id), ""))
+        self.assertEqual(result["execution_budget"]["max_executions_per_session"], 3)
+        self.assertEqual(result["execution_budget"]["executions_used"], 0)
+        self.assertNotIn("max_iterations", result["execution_budget"])
+
+
+class CheckBudgetReservationTests(TransactionTestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name="Check Budget Org", slug=f"check-budget-org-{uuid.uuid4().hex[:8]}"
+        )
+
+    def test_check_budget_reserve(self):
+        from apps.checks.budget import check_and_reserve_budget
+        from apps.sessions.budget import BudgetExceeded
+
+        check = _make_check(self.organization, name="Reserve Budget")
+        check.execution_budget = {
+            "max_executions_per_session": 2,
+            "max_targets_per_session": 5,
+            "max_concurrent_executions": 1,
+        }
+        check.save(update_fields=["execution_budget"])
+
+        budget = check_and_reserve_budget(check, 3)
+        self.assertEqual(budget.executions_used, 1)
+        self.assertEqual(budget.targets_used, 3)
+        self.assertEqual(budget.concurrent_running, 1)
+
+        check.refresh_from_db()
+        self.assertEqual(check.execution_budget["executions_used"], 1)
+        self.assertEqual(check.execution_budget["targets_used"], 3)
+        self.assertEqual(check.execution_budget["concurrent_running"], 1)
+
+        # Concurrent limit (max 1) is now exhausted.
+        with self.assertRaises(BudgetExceeded):
+            check_and_reserve_budget(check, 1)
+
+    def test_check_budget_release(self):
+        from apps.checks.budget import check_and_reserve_budget, release_execution_budget
+
+        check = _make_check(self.organization, name="Release Budget")
+        check.execution_budget = {
+            "max_executions_per_session": 5,
+            "max_targets_per_session": 10,
+            "max_concurrent_executions": 5,
+        }
+        check.save(update_fields=["execution_budget"])
+
+        check_and_reserve_budget(check, 4)
+        budget = release_execution_budget(check, 4)
+        self.assertEqual(budget.concurrent_running, 0)
+        self.assertEqual(budget.targets_used, 0)
+        self.assertEqual(budget.executions_used, 1)
+
+        check.refresh_from_db()
+        self.assertEqual(check.execution_budget["concurrent_running"], 0)
+        self.assertEqual(check.execution_budget["targets_used"], 0)
+
+
+class CheckExecutionTemplateTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="tpl_user", password="pass")
+        self.organization = Organization.objects.create(
+            name="Tpl Org", slug=f"tpl-org-{uuid.uuid4().hex[:8]}"
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+        self.check = _make_check(self.organization, name="Tpl Check")
+
+    def test_template_backward_compat_old_record(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+            evaluation_result={
+                "summary": "All good",
+                "confidence": 0.95,
+                "findings": [],
+                "capabilities": [{"capability": "cpu.check", "result": {"ok": True}}],
+            },
+            evidence={},
+            cost=Decimal("1.50"),
+            input_tokens=100,
+            output_tokens=50,
+            started_at=timezone.now(),
+            completed_at=timezone.now(),
+        )
+        response = self.client.get(f"/checks/{self.check.id}/executions/{execution.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "All good")
+        self.assertContains(response, "$1.50")
+        self.assertContains(response, "150")
+        self.assertContains(response, "100 in")
+        self.assertContains(response, "50 out")
+        self.assertContains(response, "cpu.check")
+
+    def test_template_new_record_with_evidence(self):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+            evaluation_result={
+                "summary": "New",
+                "confidence": 0.8,
+                "findings": [],
+            },
+            evidence={"capabilities": [{"capability": "disk.check", "result": {"ok": True}}]},
+            cost=Decimal("2.00"),
+            input_tokens=200,
+            output_tokens=100,
+            started_at=timezone.now(),
+            completed_at=timezone.now(),
+        )
+        response = self.client.get(f"/checks/{self.check.id}/executions/{execution.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "New")
+        self.assertContains(response, "$2.00")
+        self.assertContains(response, "300")
+        self.assertContains(response, "200 in")
+        self.assertContains(response, "100 out")
+        self.assertContains(response, "disk.check")
+
+
+class CheckCapabilityExecutionLifecycleTests(TransactionTestCase):
+    def setUp(self):
+        from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
+
+        self.user = User.objects.create_user(username="cap_user", password="pass")
+        self.organization = Organization.objects.create(
+            name="Cap Org", slug=f"cap-org-{uuid.uuid4().hex[:8]}"
+        )
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.check = _make_check(self.organization, name="Cap Check")
+        self.execution = CheckExecution.objects.create(check=self.check)
+        self.capability = Capability.objects.create(
+            organization=self.organization, name="cpu.check"
+        )
+        self.marvin = Marvin.objects.create(
+            organization=self.organization,
+            name="cap-marvin",
+            client_id="cap-client",
+            status=Marvin.Status.ONLINE,
+        )
+        self.marvin.capabilities.add(self.capability)
+        self.target_set = ResolvedTargetSet.objects.create(
+            organization=self.organization,
+            capability=self.capability,
+            selector={},
+            snapshot=[str(self.marvin.id)],
+            snapshot_metadata={"count": 1},
+            expires_at=timezone.now(),
+        )
+
+    def test_create_check_capability_executions(self):
+        result = asyncio.run(
+            create_check_capability_executions(
+                str(self.execution.id),
+                [str(self.marvin.id)],
+                self.capability.name,
+                str(self.target_set.id),
+                {"max_targets": 1},
+            )
+        )
+        self.assertEqual(len(result), 1)
+        cap_exec = CheckCapabilityExecution.objects.get(id=result[0]["id"])
+        self.assertEqual(cap_exec.check_execution, self.execution)
+        self.assertEqual(cap_exec.capability_name, self.capability.name)
+        self.assertEqual(cap_exec.marvin, self.marvin)
+        self.assertEqual(cap_exec.target_set, self.target_set)
+        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
+
+    def test_update_check_capability_execution_transitions(self):
+        cap_exec = CheckCapabilityExecution.objects.create(
+            check_execution=self.execution,
+            capability_name=self.capability.name,
+            marvin=self.marvin,
+        )
+        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
+        self.assertIsNone(cap_exec.started_at)
+        self.assertIsNone(cap_exec.completed_at)
+
+        asyncio.run(update_check_capability_execution(str(cap_exec.id), "running"))
+        cap_exec.refresh_from_db()
+        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.RUNNING)
+        self.assertIsNotNone(cap_exec.started_at)
+        self.assertIsNone(cap_exec.completed_at)
+
+        asyncio.run(
+            update_check_capability_execution(
+                str(cap_exec.id),
+                "completed",
+                result={
+                    "status": "ok",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cost": "0.01",
+                },
+            )
+        )
+        cap_exec.refresh_from_db()
+        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.COMPLETED)
+        self.assertIsNotNone(cap_exec.completed_at)
+        self.assertEqual(
+            cap_exec.result_json,
+            {"status": "ok", "input_tokens": 10, "output_tokens": 5, "cost": "0.01"},
+        )
+        self.assertEqual(cap_exec.input_tokens, 10)
+        self.assertEqual(cap_exec.output_tokens, 5)
+        self.assertEqual(cap_exec.cost, Decimal("0.01"))
