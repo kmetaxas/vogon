@@ -1396,7 +1396,7 @@ class CheckExecutionActivityTests(TransactionTestCase):
         self.assertIsNotNone(execution.completed_at)
 
 
-class CheckSchedulerResilienceTests(TestCase):
+class CheckSchedulerResilienceTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="res_user", password="pass")
         self.organization = Organization.objects.create(name="Res Org", slug="res-org")

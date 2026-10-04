@@ -3,7 +3,7 @@
 """Temporal Schedule management for Checks."""
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from temporalio.client import (
     Client,
@@ -105,7 +105,7 @@ class CheckScheduler:
     async def trigger_now(cls, check, dry_run: bool = False) -> dict:
         client: Client = await get_temporal_client()
         workflow_cls = AutonomousInvestigationWorkflow
-        workflow_id = f"check-{check.id}-manual-{datetime.utcnow().isoformat()}"
+        workflow_id = f"check-{check.id}-manual-{datetime.now(timezone.utc).isoformat()}"
 
         result = await client.execute_workflow(
             workflow_cls.run,

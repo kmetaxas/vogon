@@ -95,7 +95,7 @@ async def execute_capability(
             "thread_id": thread_id,
             "capability_name": capability_name,
             "parameters_json": json.dumps(parameters),
-            "deadline_unix_ms": int((datetime.utcnow().timestamp() + 300) * 1000),
+            "deadline_unix_ms": int((datetime.now(datetime.timezone.utc).timestamp() + 300) * 1000),
             "target_set_id": target_set_id or "",
             "execution_mode": execution_mode or "single",
             "result_index": result_index,
