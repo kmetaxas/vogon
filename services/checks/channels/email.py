@@ -50,6 +50,8 @@ class EmailChannel:
             "execution_id": str(execution.id) if execution else None,
         }
 
+        text_body: str = ""
+        html_body: str = ""
         try:
             text_body = render_to_string("checks/emails/check_alert.txt", context)
             html_body = render_to_string("checks/emails/check_alert.html", context)

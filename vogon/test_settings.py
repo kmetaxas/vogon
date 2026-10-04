@@ -17,4 +17,4 @@ CHANNEL_LAYERS = {
     },
 }
 
-STATIC_ROOT = None
+STATIC_ROOT = None  # type: ignore[assignment]

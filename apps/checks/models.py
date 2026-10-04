@@ -125,7 +125,7 @@ class CheckVersion(models.Model):
     objects = models.Manager()
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    check = models.ForeignKey(
+    check = models.ForeignKey(  # type: ignore[assignment,misc]
         Check,
         on_delete=models.CASCADE,
         related_name="versions",
@@ -162,7 +162,7 @@ class CheckExecution(models.Model):
         UNKNOWN = "unknown", "Unknown"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    check = models.ForeignKey(
+    check = models.ForeignKey(  # type: ignore[assignment,misc]
         Check,
         on_delete=models.CASCADE,
         related_name="executions",
@@ -296,7 +296,7 @@ class CheckActionLog(models.Model):
         SUPPRESSED = "suppressed", "Suppressed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    check = models.ForeignKey(
+    check = models.ForeignKey(  # type: ignore[assignment,misc]
         Check,
         on_delete=models.CASCADE,
         related_name="action_logs",

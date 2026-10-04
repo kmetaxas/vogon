@@ -215,4 +215,4 @@ class RetryManager:
 
     @classmethod
     def backoff_seconds(cls, retry_count: int) -> int:
-        return min(2**retry_count * 5, 300)
+        return min(int(2**retry_count * 5), 300)
