@@ -1,0 +1,16 @@
+<tr id="check-row-{{ check.id }}">
+    <td><a href="{% url 'checks:check-detail' check.id %}">{{ check.name }}</a></td>
+    <td>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}</td>
+    <td>{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</td>
+    <td>{% if check.last_execution %}{{ check.last_execution.triggered_at|timesince }}{% else %}Never{% endif %}</td>
+    <td>
+        <a href="{% url 'checks:check-detail' check.id %}" class="btn btn-sm btn-secondary">View</a>
+        <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-sm btn-secondary">Edit</a>
+        <button class="btn btn-sm {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
+                hx-post="{% url 'checks:check-toggle' check.id %}"
+                hx-target="#check-row-{{ check.id }}"
+                hx-swap="outerHTML">
+            {% if check.enabled %}Disable{% else %}Enable{% endif %}
+        </button>
+    </td>
+</tr>

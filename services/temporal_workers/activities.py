@@ -6,6 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, cast
 
 import temporalio.activity as activity
@@ -31,6 +32,28 @@ def _setup_django_models():
     django_setup()
 
 
+def _resolve_selector_marvin_id(check_id: str, capability_name: str, selector: dict) -> str:
+    """Resolve a single Marvin id for a Check capability selector."""
+    _setup_django_models()
+
+    from apps.checks.models import Check
+    from apps.marvins.discovery import DiscoveryEngine
+    from apps.marvins.selectors import TargetSelector
+
+    check = Check.objects.get(id=check_id)
+    target_set = DiscoveryEngine().resolve_targets(
+        check.organization,
+        capability_name,
+        selector=TargetSelector.from_dict(selector),
+    )
+    snapshot: list[str] = list(target_set.snapshot or [])  # type: ignore[arg-type]
+    if not snapshot:
+        raise ValueError(
+            f"No online Marvin found for capability '{capability_name}' with selector {selector}"
+        )
+    return str(snapshot[0])
+
+
 @activity.defn
 async def execute_capability(
     session_id: str,
@@ -38,6 +61,7 @@ async def execute_capability(
     capability_name: str,
     parameters: dict,
     marvin_id: str,
+    selector: dict | None = None,
     target_set_id: str | None = None,
     execution_mode: str | None = None,
     result_index: int = 0,
@@ -54,6 +78,11 @@ async def execute_capability(
     _setup_django_models()
     from apps.marvins.models import Marvin
 
+    if not marvin_id and selector:
+        marvin_id = await sync_to_async(_resolve_selector_marvin_id)(
+            session_id, capability_name, selector
+        )
+
     marvin = await sync_to_async(Marvin.objects.get)(id=marvin_id)
     marvin_stream = _grpc_service.get_marvin_stream(marvin.client_id)
     if marvin_stream is None:
@@ -66,7 +95,7 @@ async def execute_capability(
             "thread_id": thread_id,
             "capability_name": capability_name,
             "parameters_json": json.dumps(parameters),
-            "deadline_unix_ms": int((datetime.utcnow().timestamp() + 300) * 1000),
+            "deadline_unix_ms": int((datetime.now(datetime.timezone.utc).timestamp() + 300) * 1000),
             "target_set_id": target_set_id or "",
             "execution_mode": execution_mode or "single",
             "result_index": result_index,
@@ -392,8 +421,23 @@ def _build_llm_context(thread_id: str, user_message: dict) -> dict:
 
 
 @activity.defn
-async def call_llm(thread_id: str, messages: list[dict]) -> dict:
-    """Call the LLM and return the response."""
+async def call_llm(
+    thread_id: str | None = None,
+    messages: list[dict] | None = None,
+    llm_provider_id: str | None = None,
+    organization_id: str | None = None,
+) -> dict:
+    """Call the LLM and return the response.
+
+    ``llm_provider_id`` is an optional explicit provider override (used by Check
+    workflows, which carry their own per-Check provider). When omitted, the
+    provider configured on the Thread's session is used.
+
+    ``thread_id`` is optional: Check workflows have no Thread, so they pass
+    ``organization_id`` instead. When ``thread_id`` is omitted, all session
+    budget checks are skipped and ``organization_id`` is used to resolve the
+    LLM client.
+    """
     from decimal import Decimal
 
     from httpx import TimeoutException
@@ -405,60 +449,74 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
     from services.llm.registry import get_llm_client
     from services.llm.tools import STANDARD_TOOLS
 
-    thread = await sync_to_async(
-        Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
-    )(id=thread_id)
+    messages = messages or []
 
-    # Budget pre-check: if limits are set and already exceeded, block the call.
-    budget = SessionBudget.from_session(thread.tsession)
-    if (
-        budget.max_context_tokens > 0
-        and thread.tsession.cumulative_context_tokens >= budget.max_context_tokens
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Context token budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
-    if (
-        budget.max_cost_per_session > 0
-        and thread.tsession.total_cost >= budget.max_cost_per_session
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Cost budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
-    if (
-        budget.max_tokens_per_session > 0
-        and thread.tsession.total_tokens >= budget.max_tokens_per_session
-    ):
-        return {
-            "content": "",
-            "tool_calls": [],
-            "error": "Token budget exceeded.",
-            "reason": "budget_exceeded",
-            "reasoning": "",
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cost": "0.00",
-            "model": "",
-        }
+    thread = None
+    if thread_id:
+        thread = await sync_to_async(
+            Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
+        )(id=thread_id)
 
-    provider_id = str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
-    client = await sync_to_async(get_llm_client)(str(thread.tsession.organization_id), provider_id)
+        # Budget pre-check: if limits are set and already exceeded, block the call.
+        budget = SessionBudget.from_session(thread.tsession)
+        if (
+            budget.max_context_tokens > 0
+            and thread.tsession.cumulative_context_tokens >= budget.max_context_tokens
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Context token budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+        if (
+            budget.max_cost_per_session > 0
+            and thread.tsession.total_cost >= budget.max_cost_per_session
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Cost budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+        if (
+            budget.max_tokens_per_session > 0
+            and thread.tsession.total_tokens >= budget.max_tokens_per_session
+        ):
+            return {
+                "content": "",
+                "tool_calls": [],
+                "error": "Token budget exceeded.",
+                "reason": "budget_exceeded",
+                "reasoning": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": "0.00",
+                "model": "",
+            }
+
+    if thread is not None:
+        provider_id = llm_provider_id or (
+            str(thread.tsession.llm_provider_id) if thread.tsession.llm_provider_id else None
+        )
+        client_organization_id = str(thread.tsession.organization_id)
+    else:
+        if organization_id is None:
+            raise ValueError("call_llm requires either thread_id or organization_id")
+        provider_id = llm_provider_id
+        client_organization_id = organization_id
+
+    client = await sync_to_async(get_llm_client)(client_organization_id, provider_id)
     llm_messages = [
         LLMMessage(
             role=m["role"],
@@ -530,15 +588,24 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
             "model": "",
         }
 
-    # Resolve provider: explicit override → org default → settings fallback.
+    # Resolve provider: explicit override → session provider → org default.
     cost = Decimal("0.00")
-    provider = thread.tsession.llm_provider
+    provider = None
+    if llm_provider_id:
+        from apps.llm.models import LLMProvider
+
+        provider = await sync_to_async(LLMProvider.objects.filter(id=llm_provider_id).first)()
+    if not provider and thread is not None:
+        provider = thread.tsession.llm_provider
     if not provider:
         from apps.llm.models import LLMProvider
 
+        fallback_organization_id = (
+            str(thread.tsession.organization_id) if thread is not None else organization_id
+        )
         provider = await sync_to_async(
             lambda: (
-                LLMProvider.objects.filter(organization=thread.tsession.organization, enabled=True)
+                LLMProvider.objects.filter(organization_id=fallback_organization_id, enabled=True)
                 .order_by("-is_default")
                 .first()
             )
@@ -549,12 +616,13 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
         ) + Decimal(resp.output_tokens) * provider.cost_per_1m_output_tokens / Decimal("1000000")
 
     # Update TSession counters atomically.
-    await sync_to_async(_update_session_usage)(
-        str(thread.tsession.id),
-        resp.input_tokens,
-        resp.output_tokens,
-        str(cost),
-    )
+    if thread is not None:
+        await sync_to_async(_update_session_usage)(
+            str(thread.tsession.id),
+            resp.input_tokens,
+            resp.output_tokens,
+            str(cost),
+        )
 
     return {
         "content": resp.content or "",
@@ -570,17 +638,27 @@ async def call_llm(thread_id: str, messages: list[dict]) -> dict:
 
 
 @activity.defn
-async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
+async def execute_llm_tool(
+    thread_id: str | None, tool_call: dict, organization_id: str | None = None
+) -> dict | list:
     """Execute a tool call requested by the LLM."""
+    from apps.core.models import Organization
     from apps.sessions.models import Thread
 
     name = tool_call.get("name", "")
     args = tool_call.get("arguments") or tool_call.get("args") or {}
 
-    thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
-        id=thread_id
-    )
-    org = thread.tsession.organization
+    org = None
+    thread = None
+    if thread_id:
+        thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
+            id=thread_id
+        )
+        org = thread.tsession.organization
+    elif organization_id:
+        org = await sync_to_async(Organization.objects.get)(id=organization_id)
+    else:
+        return {"error": "No thread_id or organization_id provided for execute_llm_tool"}
 
     if name == "find_tools":
         return await sync_to_async(_find_tools)(
@@ -592,6 +670,10 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
             filters=args.get("filters"),
         )
     elif name == "execute_tool":
+        if not thread:
+            return {"error": "execute_tool requires a thread context"}
+        assert thread is not None
+        assert thread_id is not None
         tool_call, marvin_ids, error = await sync_to_async(_route_and_execute)(org, thread, args)
         if error:
             return {"db_tool_call_id": None, "result": error}
@@ -601,47 +683,37 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
         execution_mode = tool_call.execution_mode
         executions = await sync_to_async(_create_executions)(tool_call.id, marvin_ids)
 
-        async def _execute_one(index: int, marvin_id: str) -> dict:
-            execution_id = executions[index]["id"]
-            await sync_to_async(_mark_execution_running)(execution_id)
-            try:
-                result = await execute_capability(
-                    str(thread.tsession.id),
-                    thread_id,
-                    capability_name,
-                    parameters,
-                    marvin_id,
-                    target_set_id=target_set_id,
-                    execution_mode=execution_mode,
-                    result_index=index,
-                )
-            except Exception as exc:
-                await sync_to_async(_mark_execution_failed)(execution_id, str(exc))
-                return {"index": index, "marvin_id": marvin_id, "error": str(exc)}
+        from services.temporal_workers import fanout
 
-            await sync_to_async(_mark_execution_completed)(execution_id, result)
-            return {"index": index, "marvin_id": marvin_id, "result": result}
+        async def update_status(
+            execution_id: str, status: str, result: dict | None, error: str | None
+        ) -> None:
+            await sync_to_async(fanout.update_execution_status)(
+                execution_id,
+                status,
+                result,
+                error,
+                update_record=_update_session_execution_status,
+            )
 
         from apps.sessions.budget import release_execution_budget
 
         try:
-            execution_results = await asyncio.gather(
-                *[_execute_one(index, marvin_id) for index, marvin_id in enumerate(marvin_ids)]
+            execution_results = await fanout.execute_fanout(
+                marvin_ids,
+                capability_name,
+                parameters,
+                execute_capability=execute_capability,
+                execution_ids=[execution["id"] for execution in executions],
+                update_status=update_status,
+                session_id=str(thread.tsession.id),
+                thread_id=str(thread_id),
+                target_set_id=target_set_id,
+                execution_mode=execution_mode,
             )
         finally:
             await sync_to_async(release_execution_budget)(thread.tsession, len(marvin_ids))
-        results = [item for item in execution_results if "result" in item]
-        errors = [item for item in execution_results if "error" in item]
-        aggregated = {
-            "success": not errors,
-            "results": results,
-            "errors": errors,
-            "summary": {
-                "total": len(execution_results),
-                "succeeded": len(results),
-                "failed": len(errors),
-            },
-        }
+        aggregated = fanout.aggregate_results(execution_results)
         await sync_to_async(_complete_tool_call)(tool_call.id, aggregated)
         return {"db_tool_call_id": str(tool_call.id), "result": aggregated}
     elif name == "get_prometheus_alerts":
@@ -661,10 +733,14 @@ async def execute_llm_tool(thread_id: str, tool_call: dict) -> dict | list:
 
         return await query_prometheus(args.get("query", ""))
     elif name == "request_architecture_design":
+        if not thread:
+            return {"error": "request_architecture_design requires a thread context"}
         from services.standard_tools.architecture import request_architecture_design
 
         return await sync_to_async(request_architecture_design)(thread, args.get("description", ""))
     elif name == "get_architecture_design":
+        if not thread:
+            return {"error": "get_architecture_design requires a thread context"}
         from services.standard_tools.architecture import get_architecture_design
 
         return await sync_to_async(get_architecture_design)(thread)
@@ -710,9 +786,10 @@ def _route_and_execute(org, thread, args):
 
     from apps.marvins.discovery import BudgetExceeded, DiscoveryEngine, DiscoveryError
     from apps.marvins.labels import LabelSelectorError, parse_label_selector
-    from apps.marvins.models import Capability, Marvin
+    from apps.marvins.models import Marvin
     from apps.marvins.selectors import TargetSelector
     from apps.sessions.models import ToolCall
+    from services.temporal_workers import fanout
 
     capability_name = args.get("capability_name") or args.get("capability")
     selector_str = args.get("selector") or args.get("labels")
@@ -736,20 +813,15 @@ def _route_and_execute(org, thread, args):
     engine = DiscoveryEngine()
     target_set = None
     try:
-        target_set = engine.resolve_targets(
+        target_set, capability, marvin_ids, policy_snapshot = fanout.resolve_targets(
+            engine,
             org,
             capability_name,
             selector=selector,
-            session_scope=thread.tsession.target_scope,
-        )
-        capability = Capability.objects.get(id=target_set.capability_id)
-        snapshot = cast(list[str], target_set.snapshot)
-        policy, _budget = engine.check_execution_policy(
-            org,
-            capability,
-            len(snapshot),
+            target_scope=thread.tsession.target_scope,
             session=thread.tsession,
         )
+        snapshot = cast(list[str], target_set.snapshot)
     except BudgetExceeded as exc:
         return (
             None,
@@ -785,7 +857,6 @@ def _route_and_execute(org, thread, args):
     try:
         marvins = list(Marvin.objects.filter(id__in=snapshot, organization=org))
         marvins_by_id = {str(marvin.id): marvin for marvin in marvins}
-        marvin_ids = [str(marvin_id) for marvin_id in snapshot if str(marvin_id) in marvins_by_id]
         if not marvin_ids:
             release_execution_budget(thread.tsession, len(snapshot))
             return (
@@ -806,7 +877,7 @@ def _route_and_execute(org, thread, args):
             status=ToolCall.Status.IN_PROGRESS,
             target_set=target_set,
             execution_mode=execution_mode,
-            policy_snapshot=policy.model_dump(),
+            policy_snapshot=policy_snapshot,
         )
 
         return tool_call, marvin_ids, None
@@ -820,59 +891,86 @@ def _create_executions(tool_call_id: str, marvin_ids: list[str]) -> list[dict[st
 
     from apps.marvins.models import Marvin
     from apps.sessions.models import Execution, ToolCall
+    from services.temporal_workers import fanout
 
     tool_call = ToolCall.objects.get(id=tool_call_id)
     marvins = Marvin.objects.in_bulk(marvin_ids)
-    executions = [
-        Execution.objects.create(
-            tool_call=tool_call,
-            marvin=marvins.get(marvin_id),
-            result_index=index,
-        )
-        for index, marvin_id in enumerate(marvin_ids)
-    ]
-    return [{"id": str(execution.id)} for execution in executions]
+    return fanout.create_execution_records(
+        "session_tool_call",
+        str(tool_call_id),
+        marvin_ids,
+        tool_call.capability,
+        tool_call.target_set,
+        tool_call.policy_snapshot,
+        create_record=lambda _parent_type, _parent_id, marvin_id, _capability, _target_set, _policy, index: (  # noqa: E501
+            Execution.objects.create(
+                tool_call=tool_call,
+                marvin=marvins.get(marvin_id),
+                result_index=index,
+            )
+        ),
+    )
 
 
 def _mark_execution_running(execution_id: str) -> None:
-    _setup_django_models()
+    from services.temporal_workers import fanout
 
-    from django.utils import timezone
-
-    from apps.sessions.models import Execution
-
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.RUNNING,
-        started_at=timezone.now(),
+    fanout.update_execution_status(
+        execution_id,
+        "running",
+        update_record=_update_session_execution_status,
     )
 
 
 def _mark_execution_completed(execution_id: str, result: dict) -> None:
-    _setup_django_models()
+    from services.temporal_workers import fanout
 
-    from django.utils import timezone
-
-    from apps.sessions.models import Execution
-
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.COMPLETED,
+    fanout.update_execution_status(
+        execution_id,
+        "completed",
         result=result,
-        completed_at=timezone.now(),
+        update_record=_update_session_execution_status,
     )
 
 
 def _mark_execution_failed(execution_id: str, error: str) -> None:
+    from services.temporal_workers import fanout
+
+    fanout.update_execution_status(
+        execution_id,
+        "failed",
+        error=error,
+        update_record=_update_session_execution_status,
+    )
+
+
+def _update_session_execution_status(
+    execution_id: str, status: str, result: dict | None = None, error: str | None = None
+) -> None:
     _setup_django_models()
 
     from django.utils import timezone
 
     from apps.sessions.models import Execution
 
-    Execution.objects.filter(id=execution_id).update(
-        status=Execution.Status.FAILED,
-        error_message=error,
-        completed_at=timezone.now(),
-    )
+    updates: dict[str, Any] = {}
+    if status == "running":
+        updates = {"status": Execution.Status.RUNNING, "started_at": timezone.now()}
+    elif status == "completed":
+        updates = {
+            "status": Execution.Status.COMPLETED,
+            "result": result,
+            "completed_at": timezone.now(),
+        }
+    elif status == "failed":
+        updates = {
+            "status": Execution.Status.FAILED,
+            "error_message": error,
+            "completed_at": timezone.now(),
+        }
+    else:
+        raise ValueError(f"Unsupported execution status: {status}")
+    Execution.objects.filter(id=execution_id).update(**updates)
 
 
 @activity.defn
@@ -960,3 +1058,267 @@ def _record_agent_event(thread_id: str, kind: str, detail: dict) -> dict:
         detail=detail,
     )
     return {"event_id": str(event.id), "kind": kind, "label": label}
+
+
+@activity.defn
+async def load_check_context(check_id: str, version_id: str) -> dict:
+    """Load Check + Version snapshot for workflow execution."""
+    _setup_django_models()
+    from apps.checks.models import Check, CheckVersion
+
+    try:
+        check = await sync_to_async(
+            Check.objects.select_related(
+                "organization", "llm_provider", "target_scope", "created_by"
+            ).get
+        )(id=check_id)
+    except Check.DoesNotExist:
+        return {"error": "Check not found", "check_id": check_id}
+
+    version = None
+    if version_id:
+        try:
+            version = await sync_to_async(CheckVersion.objects.get)(id=version_id, check=check)
+        except CheckVersion.DoesNotExist:
+            pass
+
+    from apps.checks.models import normalize_execution_budget
+
+    context = {
+        "check_id": str(check.id),
+        "check_name": check.name,
+        "organization_id": str(check.organization_id),
+        "notification_config": check.notification_config or {},
+        "execution_budget": normalize_execution_budget(check.execution_budget),
+        "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
+        "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
+        "investigation_goal": "Investigate and report findings",
+    }
+
+    if version:
+        context["version_snapshot"] = version.definition_snapshot
+
+    return context
+
+
+@activity.defn
+async def update_check_execution(
+    check_id: str,
+    execution_id: str | None,
+    status: str,
+    health_state: str,
+    result: dict,
+    evidence: dict | list | None = None,
+    resolved_targets: dict | None = None,
+) -> dict:
+    """Update or create a CheckExecution record."""
+    _setup_django_models()
+    from django.utils import timezone
+
+    from apps.checks.models import Check, CheckExecution
+
+    status_enum = getattr(
+        CheckExecution.ExecutionStatus,
+        status.upper(),
+        CheckExecution.ExecutionStatus.PENDING,
+    )
+    health_enum = getattr(
+        CheckExecution.HealthState,
+        health_state.upper(),
+        CheckExecution.HealthState.UNKNOWN,
+    )
+    terminal_statuses = (
+        CheckExecution.ExecutionStatus.COMPLETED,
+        CheckExecution.ExecutionStatus.FAILED,
+    )
+    now = timezone.now()
+
+    if execution_id:
+        try:
+            execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
+            execution.execution_status = status_enum
+            execution.health_state = health_enum
+            execution.evaluation_result = result
+            if evidence is not None:
+                execution.evidence = evidence
+            if resolved_targets is not None:
+                execution.resolved_targets = resolved_targets
+            execution.input_tokens = result.get("input_tokens", execution.input_tokens)
+            execution.output_tokens = result.get("output_tokens", execution.output_tokens)
+            execution.cost = Decimal(result.get("cost", str(execution.cost)))
+            if status_enum == CheckExecution.ExecutionStatus.RUNNING and not execution.started_at:
+                execution.started_at = now
+            if status_enum in terminal_statuses:
+                if not execution.started_at:
+                    execution.started_at = now
+                execution.completed_at = now
+            await sync_to_async(execution.save)()
+            return {"id": str(execution.id), "status": status, "health_state": health_state}
+        except CheckExecution.DoesNotExist:
+            pass
+
+    try:
+        check = await sync_to_async(Check.objects.get)(id=check_id)
+    except Check.DoesNotExist:
+        return {
+            "id": execution_id,
+            "status": status,
+            "health_state": health_state,
+            "error": "Check not found",
+        }
+
+    create_kwargs: dict[str, Any] = {
+        "check": check,
+        "execution_status": status_enum,
+        "health_state": health_enum,
+        "evaluation_result": result,
+        "input_tokens": result.get("input_tokens", 0),
+        "output_tokens": result.get("output_tokens", 0),
+        "cost": Decimal(result.get("cost", "0.00")),
+    }
+    if evidence is not None:
+        create_kwargs["evidence"] = evidence
+    if resolved_targets is not None:
+        create_kwargs["resolved_targets"] = resolved_targets
+    if status_enum == CheckExecution.ExecutionStatus.RUNNING:
+        create_kwargs["started_at"] = now
+    if status_enum in terminal_statuses:
+        create_kwargs["started_at"] = now
+        create_kwargs["completed_at"] = now
+
+    execution = await sync_to_async(CheckExecution.objects.create)(**create_kwargs)
+    return {"id": str(execution.id), "status": status, "health_state": health_state}
+
+
+@activity.defn
+async def create_autonomous_session(check_id: str, execution_id: str) -> dict:
+    return await sync_to_async(_create_autonomous_session)(check_id, execution_id)
+
+
+def _create_autonomous_session(check_id: str, execution_id: str) -> dict:
+    _setup_django_models()
+
+    from django.db import transaction
+
+    from apps.checks.models import CheckExecution
+    from apps.sessions.models import Message, Thread, TSession
+
+    try:
+        with transaction.atomic():
+            execution = CheckExecution.objects.select_related(
+                "check",
+                "check__organization",
+                "check__llm_provider",
+                "check__created_by",
+            ).get(id=execution_id, check_id=check_id)
+
+            evaluation_result = execution.evaluation_result or {}
+            session_id = evaluation_result.get("autonomous_session_id")
+            thread_id = evaluation_result.get("autonomous_thread_id")
+            if session_id and thread_id:
+                return {"session_id": str(session_id), "thread_id": str(thread_id)}
+
+            check = execution.check
+            initial_content = (
+                check.instructions or check.description or "Investigate and report findings"
+            )
+            if session_id:
+                session = TSession.objects.get(id=session_id)
+                thread = Thread.objects.filter(
+                    tsession=session,
+                    title="Autonomous Investigation",
+                ).first()
+                if thread is None:
+                    thread = Thread.objects.create(
+                        tsession=session,
+                        title="Autonomous Investigation",
+                        user=None,
+                        status=Thread.Status.ACTIVE,
+                    )
+                    Message.objects.create(
+                        thread=thread,
+                        role=Message.Role.USER,
+                        content=initial_content,
+                    )
+
+                evaluation_result["autonomous_thread_id"] = str(thread.id)
+                execution.evaluation_result = evaluation_result
+                execution.save(update_fields=["evaluation_result"])
+                return {"session_id": str(session.id), "thread_id": str(thread.id)}
+
+            session = TSession.objects.create(
+                organization=check.organization,
+                title=f"Autonomous Check: {check.name}",
+                status=TSession.Status.ACTIVE,
+                is_autonomous=True,
+                target_scope=check.target_scope,
+                execution_budget=check.execution_budget or {},
+                llm_provider=check.llm_provider,
+                created_by=check.created_by,
+            )
+            thread = Thread.objects.create(
+                tsession=session,
+                title="Autonomous Investigation",
+                user=None,
+                status=Thread.Status.ACTIVE,
+            )
+            Message.objects.create(
+                thread=thread,
+                role=Message.Role.USER,
+                content=initial_content,
+            )
+
+            evaluation_result.update(
+                {
+                    "autonomous_session_id": str(session.id),
+                    "autonomous_thread_id": str(thread.id),
+                }
+            )
+            execution.evaluation_result = evaluation_result
+            execution.save(update_fields=["evaluation_result"])
+
+            return {"session_id": str(session.id), "thread_id": str(thread.id)}
+    except CheckExecution.DoesNotExist:
+        return {
+            "error": "CheckExecution not found",
+            "check_id": check_id,
+            "execution_id": execution_id,
+        }
+
+
+@activity.defn
+async def dispatch_actions(
+    check_id: str,
+    execution_id: str,
+    findings: list[dict],
+    dry_run: bool = False,
+) -> dict:
+    """Dispatch notifications for Check findings via the ActionDispatcher."""
+    _setup_django_models()
+    from apps.checks.models import Check, CheckExecution
+    from services.checks.actions import ActionDispatcher
+
+    check = await sync_to_async(Check.objects.get)(id=check_id)
+
+    execution = None
+    if execution_id:
+        try:
+            execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
+        except CheckExecution.DoesNotExist:
+            pass
+
+    if dry_run:
+        return {"dispatched": [], "dry_run": True}
+
+    logs = await sync_to_async(ActionDispatcher.dispatch)(check, execution, findings)
+
+    actions_dispatched = [
+        {
+            "action_id": str(log.id),
+            "action_type": log.action_type,
+            "status": log.delivery_status,
+        }
+        for log in logs
+    ]
+
+    return {"dispatched": actions_dispatched, "dry_run": False}

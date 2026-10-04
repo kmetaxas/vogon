@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% load money_tags %}
+{% block title %}Execution {{ execution.id }} — {{ check.name }}{% endblock %}
+{% block content %}
+<div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--spacing-lg);">
+        <h1>Execution Detail</h1>
+        <a href="{% url 'checks:check-detail' check.id %}" class="btn btn-secondary">&larr; Back to Check Detail</a>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Execution Metadata</h2>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:var(--spacing-md); margin-top:var(--spacing-md);">
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Triggered At</div>
+                <div>{{ execution.triggered_at }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Started At</div>
+                <div>{{ execution.started_at|default:"—" }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Completed At</div>
+                <div>{{ execution.completed_at|default:"—" }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Status</div>
+                <div>
+                    {% if execution.execution_status == 'completed' %}<span class="badge badge-success">{{ execution.get_execution_status_display }}</span>
+                    {% elif execution.execution_status == 'running' %}<span class="badge badge-active">{{ execution.get_execution_status_display }}</span>
+                    {% elif execution.execution_status == 'failed' %}<span class="badge badge-danger">{{ execution.get_execution_status_display }}</span>
+                    {% elif execution.execution_status == 'pending' %}<span class="badge badge-secondary">{{ execution.get_execution_status_display }}</span>
+                    {% elif execution.execution_status == 'cancelled' %}<span class="badge badge-secondary">{{ execution.get_execution_status_display }}</span>
+                    {% elif execution.execution_status == 'queued' %}<span class="badge badge-secondary">{{ execution.get_execution_status_display }}</span>
+                    {% else %}<span class="badge badge-secondary">{{ execution.get_execution_status_display }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Health State</div>
+                <div>
+                    {% if execution.health_state == 'healthy' %}<span class="badge badge-success">{{ execution.get_health_state_display }}</span>
+                    {% elif execution.health_state == 'degraded' %}<span class="badge badge-warning">{{ execution.get_health_state_display }}</span>
+                    {% elif execution.health_state == 'critical' %}<span class="badge badge-danger">{{ execution.get_health_state_display }}</span>
+                    {% else %}<span class="badge badge-secondary">{{ execution.get_health_state_display }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Cost</div>
+                <div>{{ execution.cost|money }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Tokens</div>
+                <div>{{ execution.input_tokens|add:execution.output_tokens }} ({{ execution.input_tokens }} in / {{ execution.output_tokens }} out)</div>
+            </div>
+        </div>
+    </div>
+
+    {% if execution.error_message %}
+    <div class="card" style="margin-bottom:var(--spacing-lg); border-color:var(--color-danger, #dc2626);">
+        <h2 class="card-title" style="color:var(--color-danger, #dc2626);">Error</h2>
+        <div style="margin-top:var(--spacing-md); padding:var(--spacing-md); background:var(--color-surface); border-radius:var(--radius); color:var(--color-danger, #dc2626); font-family:monospace; font-size:0.875rem; white-space:pre-wrap;">{{ execution.error_message }}</div>
+    </div>
+    {% endif %}
+
+    {% if execution.evaluation_result %}
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Evaluation Result</h2>
+        <div style="margin-top:var(--spacing-md);">
+            {% if execution.evaluation_result.summary %}
+            <div style="margin-bottom:var(--spacing-md);">
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Summary</div>
+                <div style="margin-top:var(--spacing-sm);">{{ execution.evaluation_result.summary }}</div>
+            </div>
+            {% endif %}
+            {% if execution.evaluation_result.confidence is not None %}
+            <div style="margin-bottom:var(--spacing-md);">
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Confidence</div>
+                <div style="margin-top:var(--spacing-sm); display:flex; align-items:center; gap:var(--spacing-sm);">
+                    <div style="flex:1; height:8px; background:var(--color-border); border-radius:4px; overflow:hidden;">
+                        <div style="width:{% widthratio execution.evaluation_result.confidence 1 100 %}%; height:100%; background:{% if execution.evaluation_result.confidence >= 0.8 %}var(--color-success, #16a34a){% elif execution.evaluation_result.confidence >= 0.5 %}var(--color-warning, #ca8a04){% else %}var(--color-danger, #dc2626){% endif %}; border-radius:4px;"></div>
+                    </div>
+                    <span style="font-size:0.875rem; font-weight:600; min-width:3em; text-align:right;">{% widthratio execution.evaluation_result.confidence 1 100 %}%</span>
+                </div>
+            </div>
+            {% endif %}
+            {% if execution.evaluation_result.findings %}
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary); margin-bottom:var(--spacing-sm);">Findings</div>
+                <table class="table" style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--color-border);">
+                            <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Severity</th>
+                            <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Message</th>
+                            <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Path</th>
+                            <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Expected</th>
+                            <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Actual</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for finding in execution.evaluation_result.findings %}
+                        <tr style="border-bottom:1px solid var(--color-border);">
+                            <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                                {% if finding.severity == 'critical' or finding.severity == 'high' %}<span class="badge badge-danger">{{ finding.severity|title }}</span>
+                                {% elif finding.severity == 'medium' or finding.severity == 'degraded' %}<span class="badge badge-warning">{{ finding.severity|title }}</span>
+                                {% elif finding.severity == 'low' or finding.severity == 'healthy' %}<span class="badge badge-success">{{ finding.severity|title }}</span>
+                                {% else %}<span class="badge badge-secondary">{{ finding.severity|title|default:"—" }}</span>
+                                {% endif %}
+                            </td>
+                            <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ finding.message|default:"—" }}</td>
+                            <td style="padding:var(--spacing-sm) var(--spacing-md); font-family:monospace; font-size:0.8125rem;">{{ finding.path|default:"—" }}</td>
+                            <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ finding.expected|default:"—" }}</td>
+                            <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ finding.actual|default:"—" }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" style="padding:var(--spacing-md); text-align:center; color:var(--color-text-secondary);">No findings.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Evidence</h2>
+        <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5; margin-top:var(--spacing-md);">
+{% if execution.evidence %}
+{{ execution.evidence|pprint }}
+{% elif execution.evaluation_result.capabilities %}
+{{ execution.evaluation_result.capabilities|pprint }}
+{% elif execution.evaluation_result.investigation_results %}
+{{ execution.evaluation_result.investigation_results|pprint }}
+{% else %}
+{}
+{% endif %}
+        </pre>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Resolved Targets</h2>
+        <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5; margin-top:var(--spacing-md);">{{ execution.resolved_targets|pprint }}</pre>
+    </div>
+</div>
+{% endblock %}

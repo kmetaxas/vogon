@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "apps.marvins",
     "apps.sessions",
     "apps.infradesigns",
+    "apps.checks",
     "apps.ws",
     "channels_postgres",
 ]
@@ -197,6 +198,26 @@ LLM_PROMETHEUS_TOOLS_ENABLED = os.environ.get("LLM_PROMETHEUS_TOOLS_ENABLED", "F
 )
 PROMETHEUS_BASE_URL = os.environ.get("PROMETHEUS_BASE_URL", "")
 PROMETHEUS_AUTH_TOKEN = os.environ.get("PROMETHEUS_AUTH_TOKEN", "")
+
+# Checks
+CHECK_DEFAULT_RETENTION_DAYS = int(os.environ.get("CHECK_DEFAULT_RETENTION_DAYS", "90"))
+CHECK_MAX_CONCURRENT_PER_ORG = int(os.environ.get("CHECK_MAX_CONCURRENT_PER_ORG", "5"))
+CHECK_DRY_RUN_DEFAULT = os.environ.get("CHECK_DRY_RUN_DEFAULT", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ALERTMANAGER_ENABLED = os.environ.get("ALERTMANAGER_ENABLED", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ALERTMANAGER_URL = os.environ.get("ALERTMANAGER_URL", "")
+TEAMS_WEBHOOK_URL = os.environ.get("TEAMS_WEBHOOK_URL", "")
+
+# The Check models use a `check` FK, which shadows Django's Model.check()
+# classmethod. This is intentional; silence the resulting E020 system check.
+SILENCED_SYSTEM_CHECKS = ["models.E020"]
 
 # Embeddings
 EMBEDDING_PROVIDER_TYPE = os.environ.get("EMBEDDING_PROVIDER_TYPE", "openai")

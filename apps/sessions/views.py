@@ -344,6 +344,7 @@ class SessionListView(OrganizationRequiredMixin, View):
     def get(self, request):
         sessions = TSession.objects.filter(
             organization=self.organization,
+            is_autonomous=False,
         )
         context = {
             "sessions": sessions,

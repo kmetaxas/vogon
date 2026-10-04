@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}{{ check.name }} — Check Detail{% endblock %}
+{% block content %}
+<div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--spacing-lg);">
+        <h1>{{ check.name }}</h1>
+        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">&larr; Back to Checks</a>
+    </div>
+
+    <div id="action-result"></div>
+
+    <div id="detail-actions" class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Actions</h2>
+        <div style="display:flex; gap:var(--spacing-md); flex-wrap:wrap; margin-top:var(--spacing-md);">
+            <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-secondary">Edit</a>
+            <button hx-post="{% url 'checks:check-toggle' check.id %}" hx-target="#detail-actions" hx-swap="outerHTML" class="btn {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}">{% if check.enabled %}Disable{% else %}Enable{% endif %}</button>
+            <button hx-post="{% url 'checks:check-trigger' check.id %}" hx-target="#action-result" hx-swap="innerHTML" class="btn btn-primary">Trigger Now</button>
+            <button hx-post="{% url 'checks:check-dry-run' check.id %}" hx-target="#action-result" hx-swap="innerHTML" class="btn btn-secondary">Dry Run</button>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Details</h2>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:var(--spacing-md); margin-top:var(--spacing-md);">
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Name</div>
+                <div>{{ check.name }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Description</div>
+                <div>{{ check.description|default:"—" }}</div>
+            </div>
+            <div style="grid-column:1 / -1;">
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Instructions</div>
+                <div>{{ check.instructions|default:"—" }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Schedule</div>
+                <div>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }} ({{ check.timezone }})</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Status</div>
+                <div>{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Created At</div>
+                <div>{{ check.created_at }}</div>
+            </div>
+            <div>
+                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Updated At</div>
+                <div>{{ check.updated_at }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--spacing-lg);">
+        <h2 class="card-title">Configuration</h2>
+        <div style="margin-top:var(--spacing-md);">
+            <h3>Notification Config</h3>
+            <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5;">{{ check.notification_config|pprint }}</pre>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">Recent Executions</h2>
+        <table class="table" style="width:100%; border-collapse:collapse; font-size:0.875rem; margin-top:var(--spacing-md);">
+            <thead>
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Time</th>
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Status</th>
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">State</th>
+                    <th style="padding:var(--spacing-sm) var(--spacing-md); text-align:left; font-weight:600; color:var(--color-text-secondary); font-size:0.75rem; text-transform:uppercase;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for exec in executions %}
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">{{ exec.triggered_at }}</td>
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                        {% if exec.execution_status == 'completed' %}<span class="badge badge-success">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'running' %}<span class="badge badge-active">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'failed' %}<span class="badge badge-danger">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'pending' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'cancelled' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% elif exec.execution_status == 'queued' %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% else %}<span class="badge badge-secondary">{{ exec.get_execution_status_display }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                        {% if exec.health_state == 'healthy' %}<span class="badge badge-success">{{ exec.get_health_state_display }}</span>
+                        {% elif exec.health_state == 'degraded' %}<span class="badge badge-warning">{{ exec.get_health_state_display }}</span>
+                        {% elif exec.health_state == 'critical' %}<span class="badge badge-danger">{{ exec.get_health_state_display }}</span>
+                        {% else %}<span class="badge badge-secondary">{{ exec.get_health_state_display }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:var(--spacing-sm) var(--spacing-md);">
+                        <a href="{% url 'checks:check-execution-detail' check.id exec.id %}" class="btn btn-sm btn-secondary">View</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="4" style="padding:var(--spacing-md); text-align:center; color:var(--color-text-secondary);">No executions yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

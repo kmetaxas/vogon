@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{% if check %}Edit{% else %}New{% endif %} Check{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="check-form-header">
+        <h1>{% if check %}Edit{% else %}New{% endif %} Check</h1>
+        <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">&larr; Back to Checks</a>
+    </div>
+
+    <div class="card">
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" class="form-control" value="{{ check.name|default:'' }}" required>
+                <div class="form-help">A unique name for this check.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-control" rows="3">{{ check.description|default:'' }}</textarea>
+                <div class="form-help">Human-readable description of what this check monitors.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Instructions</label>
+                <textarea name="instructions" class="form-control" rows="4">{{ check.instructions|default:'' }}</textarea>
+                <div class="form-help">Instructions for the LLM when evaluating this check.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Schedule Type</label>
+                <select name="schedule_type" class="form-control">
+                    {% for value, label in schedule_types %}
+                    <option value="{{ value }}" {% if check and check.schedule_type == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-help">Interval runs every N seconds. Cron runs on a schedule expression.</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Schedule Expression</label>
+                <input type="text" name="schedule_expression" class="form-control" value="{{ check.schedule_expression|default:'60' }}" required>
+                <div class="form-help">e.g. '60' for interval seconds, or '0 9 * * *' for cron</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Timezone</label>
+                <input type="text" name="timezone" class="form-control" value="{{ check.timezone|default:'UTC' }}">
+                <div class="form-help">Timezone for cron schedules (e.g. UTC, America/New_York)</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notification Config (JSON)</label>
+                <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
+                <div class="form-help">JSON object with notification channels and conditions.</div>
+            </div>
+            {% if check and check.notification_config %}
+            {{ check.notification_config|json_script:"notification-config-data" }}
+            {% else %}
+            <script type="application/json" id="notification-config-data">{}</script>
+            {% endif %}
+            <script>
+            (function() {
+                function populateTextarea(textareaId, dataId, rawValue) {
+                    var textarea = document.getElementById(textareaId);
+                    if (!textarea) return;
+                    if (rawValue) {
+                        textarea.value = rawValue;
+                        return;
+                    }
+                    var dataEl = document.getElementById(dataId);
+                    if (dataEl) {
+                        try {
+                            var data = JSON.parse(dataEl.textContent);
+                            textarea.value = JSON.stringify(data, null, 2);
+                        } catch (e) {
+                            textarea.value = '{}';
+                        }
+                    } else {
+                        textarea.value = '{}';
+                    }
+                }
+                populateTextarea('id-notification-config', 'notification-config-data', '{{ notification_config_raw|default:""|escapejs }}');
+            })();
+            </script>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

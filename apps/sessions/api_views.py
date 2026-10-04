@@ -34,7 +34,7 @@ class OrganizationFilterMixin:
 
 
 class TSessionViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
-    queryset = TSession.objects.all()
+    queryset = TSession.objects.filter(is_autonomous=False)
     serializer_class = TSessionSerializer
     permission_classes = [permissions.IsAuthenticated]
 

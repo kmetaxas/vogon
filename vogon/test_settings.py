@@ -16,3 +16,5 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
+
+STATIC_ROOT = None  # type: ignore[assignment]

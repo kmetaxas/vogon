@@ -30,14 +30,16 @@ class IndexView(View):
             if not request.user.is_superuser and not request.user.organizations.exists():
                 return redirect("core:org-setup")
             active_sessions = TSession.objects.filter(
-                status__in=[TSession.Status.ACTIVE, TSession.Status.PENDING]
+                status__in=[TSession.Status.ACTIVE, TSession.Status.PENDING],
+                is_autonomous=False,
             )
             previous_sessions = TSession.objects.filter(
                 status__in=[
                     TSession.Status.COMPLETED,
                     TSession.Status.FAILED,
                     TSession.Status.PAUSED,
-                ]
+                ],
+                is_autonomous=False,
             )
             context = {
                 "active_sessions": active_sessions,
@@ -52,6 +54,7 @@ class DashboardView(OrganizationRequiredMixin, View):
         active_sessions = TSession.objects.filter(
             organization=self.organization,
             status__in=[TSession.Status.ACTIVE, TSession.Status.PENDING],
+            is_autonomous=False,
         )
         previous_sessions = TSession.objects.filter(
             organization=self.organization,
@@ -60,6 +63,7 @@ class DashboardView(OrganizationRequiredMixin, View):
                 TSession.Status.FAILED,
                 TSession.Status.PAUSED,
             ],
+            is_autonomous=False,
         )
         context = {
             "active_sessions": active_sessions,

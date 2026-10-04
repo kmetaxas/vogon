@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from asgiref.sync import sync_to_async
@@ -43,7 +43,7 @@ class MarvinStream:
         self.command_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.response_futures: dict[str, asyncio.Future] = {}
         self.connected = False
-        self.last_seen = datetime.utcnow()
+        self.last_seen = datetime.now(UTC)
 
     async def send_command(self, command: dict) -> dict:
         """Send a command to the Marvin and wait for response."""
@@ -149,7 +149,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                     async with self._lock:
                         self.marvins[agent_id] = stream
                     stream.connected = True
-                    stream.last_seen = datetime.utcnow()
+                    stream.last_seen = datetime.now(UTC)
                     logger.info(f"Marvin {agent_id} connected")
 
                     await self._handle_register(agent_id, message.register, org)
@@ -175,13 +175,13 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                             )
                         )
 
-                    config_version = int(datetime.utcnow().timestamp())
+                    config_version = int(datetime.now(UTC).timestamp())
 
                     registered_msg = marvin_pb2.ControlMessage(
                         command_id=str(uuid.uuid4()),
                         registered=marvin_pb2.Registered(
                             heartbeat_interval_seconds=10,
-                            server_timestamp_unix_ms=int(datetime.utcnow().timestamp() * 1000),
+                            server_timestamp_unix_ms=int(datetime.now(UTC).timestamp() * 1000),
                             effective_config=marvin_pb2.UpdateConfig(
                                 capabilities=cap_manifests,
                                 config_version=config_version,
@@ -192,14 +192,14 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
 
                 elif payload_field == "heartbeat":
                     if stream is not None:
-                        stream.last_seen = datetime.utcnow()
+                        stream.last_seen = datetime.now(UTC)
                     if agent_id is not None:
                         await self._update_marvin_status(agent_id, "online")
 
                     hb_ack = marvin_pb2.ControlMessage(
                         command_id=str(uuid.uuid4()),
                         heartbeat_ack=marvin_pb2.HeartbeatAck(
-                            received_timestamp_unix_ms=int(datetime.utcnow().timestamp() * 1000),
+                            received_timestamp_unix_ms=int(datetime.now(UTC).timestamp() * 1000),
                         ),
                     )
                     yield hb_ack
