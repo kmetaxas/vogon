@@ -4,7 +4,6 @@ from rest_framework.routers import DefaultRouter
 from apps.checks.api_views import (
     CheckActionLogViewSet,
     CheckExecutionViewSet,
-    CheckHealthStateViewSet,
     CheckVersionViewSet,
     CheckViewSet,
 )
@@ -49,7 +48,6 @@ router.register(r"llm-providers", LLMProviderViewSet, basename="llmprovider")
 router.register(r"checks", CheckViewSet, basename="check")
 router.register(r"check-versions", CheckVersionViewSet, basename="checkversion")
 router.register(r"check-executions", CheckExecutionViewSet, basename="checkexecution")
-router.register(r"check-health-states", CheckHealthStateViewSet, basename="checkhealthstate")
 router.register(r"check-action-logs", CheckActionLogViewSet, basename="checkactionlog")
 
 urlpatterns = [

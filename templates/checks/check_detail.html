@@ -39,26 +39,8 @@
                 <div>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }} ({{ check.timezone }})</div>
             </div>
             <div>
-                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Execution Mode</div>
-                <div>{{ check.get_execution_mode_display }}</div>
-            </div>
-            <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Status</div>
                 <div>{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</div>
-            </div>
-            <div>
-                <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Health State</div>
-                <div>
-                    {% if health_state %}
-                        {% if health_state.current_state == 'healthy' %}<span class="badge badge-success">Healthy</span>
-                        {% elif health_state.current_state == 'degraded' %}<span class="badge badge-warning">Degraded</span>
-                        {% elif health_state.current_state == 'critical' %}<span class="badge badge-danger">Critical</span>
-                        {% else %}<span class="badge badge-secondary">Unknown</span>
-                        {% endif %}
-                    {% else %}
-                        <span class="badge badge-secondary">Unknown</span>
-                    {% endif %}
-                </div>
             </div>
             <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Created At</div>
@@ -74,10 +56,6 @@
     <div class="card" style="margin-bottom:var(--spacing-lg);">
         <h2 class="card-title">Configuration</h2>
         <div style="margin-top:var(--spacing-md);">
-            <h3>Evaluation Rules</h3>
-            <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5;">{{ check.evaluation_config|pprint }}</pre>
-        </div>
-        <div style="margin-top:var(--spacing-lg);">
             <h3>Notification Config</h3>
             <pre style="background:var(--color-surface); padding:var(--spacing-md); border-radius:var(--radius); overflow-x:auto; font-size:0.8125rem; line-height:1.5;">{{ check.notification_config|pprint }}</pre>
         </div>

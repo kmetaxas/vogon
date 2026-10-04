@@ -974,196 +974,6 @@ def _update_session_execution_status(
 
 
 @activity.defn
-async def resolve_check_capability_targets(
-    check_id: str, capability_name: str, selector: dict | None = None
-) -> dict:
-    return await sync_to_async(_resolve_check_capability_targets)(
-        check_id, capability_name, selector or {}
-    )
-
-
-def _resolve_check_capability_targets(check_id: str, capability_name: str, selector: dict) -> dict:
-    _setup_django_models()
-
-    from apps.checks.models import Check
-    from apps.marvins.discovery import DiscoveryEngine
-    from apps.marvins.selectors import TargetSelector
-    from services.temporal_workers import fanout
-
-    check = Check.objects.select_related("organization", "target_scope").get(id=check_id)
-    try:
-        target_selector = TargetSelector.from_dict(selector) if selector else None
-        target_set, capability, marvin_ids, policy_snapshot = fanout.resolve_targets(
-            DiscoveryEngine(),
-            check.organization,
-            capability_name,
-            target_selector,
-            check.target_scope,
-        )
-    except Exception as exc:
-        return {"success": False, "capability": capability_name, "error": str(exc)}
-
-    if not marvin_ids:
-        return {
-            "success": False,
-            "capability": capability_name,
-            "target_set_id": str(target_set.id),
-            "error": f"No online Marvin found for capability '{capability_name}'",
-            "resolved_targets": {
-                "target_set_id": str(target_set.id),
-                "capability_id": str(capability.id),
-                "capability": capability_name,
-                "selector": selector,
-                "snapshot": [str(marvin_id) for marvin_id in (target_set.snapshot or [])],
-                "marvin_ids": [],
-                "policy_snapshot": policy_snapshot,
-            },
-        }
-
-    return {
-        "success": True,
-        "capability": capability_name,
-        "capability_id": str(capability.id),
-        "target_set_id": str(target_set.id),
-        "marvin_ids": marvin_ids,
-        "policy_snapshot": policy_snapshot,
-        "resolved_targets": {
-            "target_set_id": str(target_set.id),
-            "capability_id": str(capability.id),
-            "capability": capability_name,
-            "selector": selector,
-            "snapshot": [str(marvin_id) for marvin_id in (target_set.snapshot or [])],
-            "marvin_ids": marvin_ids,
-            "policy_snapshot": policy_snapshot,
-        },
-    }
-
-
-@activity.defn
-async def reserve_check_execution_budget(check_id: str, target_count: int) -> dict:
-    return await sync_to_async(_reserve_check_execution_budget)(check_id, target_count)
-
-
-def _reserve_check_execution_budget(check_id: str, target_count: int) -> dict:
-    _setup_django_models()
-
-    from apps.checks.budget import check_and_reserve_budget
-    from apps.checks.models import Check
-
-    check = Check.objects.get(id=check_id)
-    budget = check_and_reserve_budget(check, target_count)
-    return {"check_id": check_id, "target_count": target_count, "budget": budget.to_dict()}
-
-
-@activity.defn
-async def release_check_execution_budget(check_id: str, target_count: int) -> dict:
-    return await sync_to_async(_release_check_execution_budget)(check_id, target_count)
-
-
-def _release_check_execution_budget(check_id: str, target_count: int) -> dict:
-    _setup_django_models()
-
-    from apps.checks.budget import release_execution_budget
-    from apps.checks.models import Check
-
-    check = Check.objects.get(id=check_id)
-    budget = release_execution_budget(check, target_count)
-    return {"check_id": check_id, "target_count": target_count, "budget": budget.to_dict()}
-
-
-@activity.defn
-async def create_check_capability_executions(
-    check_execution_id: str,
-    marvin_ids: list[str],
-    capability_name: str,
-    target_set_id: str | None,
-    policy_snapshot: dict | None = None,
-) -> list[dict[str, str]]:
-    return await sync_to_async(_create_check_capability_executions)(
-        check_execution_id, marvin_ids, capability_name, target_set_id, policy_snapshot or {}
-    )
-
-
-def _create_check_capability_executions(
-    check_execution_id: str,
-    marvin_ids: list[str],
-    capability_name: str,
-    target_set_id: str | None,
-    policy_snapshot: dict,
-) -> list[dict[str, str]]:
-    _setup_django_models()
-
-    from apps.checks.models import CheckCapabilityExecution, CheckExecution
-    from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
-    from services.temporal_workers import fanout
-
-    check_execution = CheckExecution.objects.get(id=check_execution_id)
-    capability = Capability.objects.get(
-        name=capability_name, organization=check_execution.check.organization
-    )
-    target_set = (
-        ResolvedTargetSet.objects.filter(id=target_set_id).first() if target_set_id else None
-    )
-    marvins = {str(marvin.id): marvin for marvin in Marvin.objects.filter(id__in=marvin_ids)}
-    return fanout.create_execution_records(
-        "check_execution",
-        str(check_execution_id),
-        marvin_ids,
-        capability,
-        target_set,
-        policy_snapshot,
-        create_record=lambda _parent_type, _parent_id, marvin_id, cap, target, _policy, _index: (
-            CheckCapabilityExecution.objects.create(
-                check_execution=check_execution,
-                capability_name=cap.name,
-                marvin=marvins.get(str(marvin_id)),
-                target_set=target,
-            )
-        ),
-    )
-
-
-@activity.defn
-async def update_check_capability_execution(
-    execution_id: str, status: str, result: dict | None = None, error: str | None = None
-) -> dict:
-    return await sync_to_async(_update_check_capability_execution)(
-        execution_id, status, result, error
-    )
-
-
-def _update_check_capability_execution(
-    execution_id: str, status: str, result: dict | None = None, error: str | None = None
-) -> dict:
-    _setup_django_models()
-
-    from django.utils import timezone
-
-    from apps.checks.models import CheckCapabilityExecution
-
-    execution = CheckCapabilityExecution.objects.get(id=execution_id)
-    if status == "running":
-        execution.status = CheckCapabilityExecution.Status.RUNNING
-        execution.started_at = timezone.now()
-    elif status == "completed":
-        execution.status = CheckCapabilityExecution.Status.COMPLETED
-        execution.result_json = result or {}
-        execution.completed_at = timezone.now()
-        if result:
-            execution.input_tokens = result.get("input_tokens", execution.input_tokens)
-            execution.output_tokens = result.get("output_tokens", execution.output_tokens)
-            execution.cost = Decimal(str(result.get("cost", execution.cost)))
-    elif status == "failed":
-        execution.status = CheckCapabilityExecution.Status.FAILED
-        execution.error_message = error or ""
-        execution.completed_at = timezone.now()
-    else:
-        raise ValueError(f"Unsupported check capability execution status: {status}")
-    execution.save()
-    return {"id": str(execution.id), "status": status}
-
-
-@activity.defn
 async def release_execution_budget_activity(session_id: str, target_count: int) -> dict:
     return await sync_to_async(_release_execution_budget)(session_id, target_count)
 
@@ -1278,45 +1088,17 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
         "check_id": str(check.id),
         "check_name": check.name,
         "organization_id": str(check.organization_id),
-        "execution_mode": check.execution_mode,
-        "evaluation_config": check.evaluation_config or {},
         "notification_config": check.notification_config or {},
         "execution_budget": normalize_execution_budget(check.execution_budget),
         "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
         "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
-        "investigation_goal": (
-            check.evaluation_config.get("goal", "Investigate and report findings")
-            if check.evaluation_config
-            else "Investigate and report findings"
-        ),
+        "investigation_goal": "Investigate and report findings",
     }
 
     if version:
         context["version_snapshot"] = version.definition_snapshot
 
     return context
-
-
-@activity.defn
-async def evaluate_check(check_id: str, execution_result: dict, rules: list[dict]) -> dict:
-    """Evaluate execution results against deterministic rules."""
-    from apps.checks.evaluation import EvaluationEngine
-
-    result = EvaluationEngine.evaluate(execution_result, rules)
-    return {
-        "state": result.state.value,
-        "findings": [
-            {
-                "severity": f.severity.value,
-                "message": f.message,
-                "path": f.path,
-                "expected": f.expected,
-                "actual": f.actual,
-            }
-            for f in result.findings
-        ],
-        "confidence": result.confidence,
-    }
 
 
 @activity.defn

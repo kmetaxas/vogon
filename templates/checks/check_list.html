@@ -7,23 +7,12 @@
     <div class="card">
         <table class="table">
             <thead>
-                <tr><th>Name</th><th>Mode</th><th>Schedule</th><th>Status</th><th>Last Run</th><th>Actions</th></tr>
+                <tr><th>Name</th><th>Schedule</th><th>Status</th><th>Last Run</th><th>Actions</th></tr>
             </thead>
             <tbody>
                 {% for check in checks %}
                 <tr id="check-row-{{ check.id }}">
                     <td><a href="{% url 'checks:check-detail' check.id %}">{{ check.name }}</a></td>
-                    <td>
-                        {% if check.execution_mode == 'deterministic' %}
-                            <span class="badge badge-online">Deterministic</span>
-                        {% elif check.execution_mode == 'ai_assisted' %}
-                            <span class="badge badge-busy">AI Assisted</span>
-                        {% elif check.execution_mode == 'autonomous' %}
-                            <span class="badge badge-warning">Autonomous</span>
-                        {% else %}
-                            <span class="badge badge-secondary">{{ check.get_execution_mode_display }}</span>
-                        {% endif %}
-                    </td>
                     <td>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}</td>
                     <td>
                         {% if check.enabled %}

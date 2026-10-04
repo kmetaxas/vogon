@@ -5,12 +5,9 @@ from rest_framework import serializers
 from apps.checks.models import (
     Check,
     CheckActionLog,
-    CheckCapabilityExecution,
     CheckExecution,
-    CheckHealthState,
     CheckVersion,
     normalize_execution_budget,
-    validate_capability_selectors,
 )
 
 
@@ -33,8 +30,6 @@ class CheckSerializer(serializers.ModelSerializer):
             "schedule_type",
             "schedule_expression",
             "timezone",
-            "execution_mode",
-            "evaluation_config",
             "notification_config",
             "execution_budget",
             "llm_provider",
@@ -85,15 +80,6 @@ class CheckSerializer(serializers.ModelSerializer):
             if seconds <= 0:
                 raise serializers.ValidationError("Interval must be a positive integer (seconds).")
 
-        evaluation_config = attrs.get(
-            "evaluation_config",
-            getattr(self.instance, "evaluation_config", None),
-        )
-        try:
-            validate_capability_selectors(evaluation_config)
-        except ValidationError as exc:
-            raise serializers.ValidationError(exc.messages) from exc
-
         execution_budget = attrs.get(
             "execution_budget",
             getattr(self.instance, "execution_budget", None),
@@ -123,36 +109,8 @@ class CheckVersionSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "check_name"]
 
 
-class CheckCapabilityExecutionSerializer(serializers.ModelSerializer):
-    check_name = serializers.CharField(source="check_execution.check.name", read_only=True)
-    marvin_name = serializers.CharField(source="marvin.name", read_only=True)
-
-    class Meta:
-        model = CheckCapabilityExecution
-        fields = [
-            "id",
-            "check_execution",
-            "check_name",
-            "capability_name",
-            "marvin",
-            "marvin_name",
-            "target_set",
-            "status",
-            "result_json",
-            "error_message",
-            "input_tokens",
-            "output_tokens",
-            "cost",
-            "started_at",
-            "completed_at",
-            "created_at",
-        ]
-        read_only_fields = ["id", "created_at", "check_name", "marvin_name"]
-
-
 class CheckExecutionSerializer(serializers.ModelSerializer):
     check_name = serializers.CharField(source="check.name", read_only=True)
-    capability_executions = CheckCapabilityExecutionSerializer(many=True, read_only=True)
 
     class Meta:
         model = CheckExecution
@@ -175,28 +133,8 @@ class CheckExecutionSerializer(serializers.ModelSerializer):
             "cost",
             "actions_triggered",
             "dry_run",
-            "capability_executions",
         ]
         read_only_fields = ["id", "triggered_at"]
-
-
-class CheckHealthStateSerializer(serializers.ModelSerializer):
-    check_name = serializers.CharField(source="check.name", read_only=True)
-
-    class Meta:
-        model = CheckHealthState
-        fields = [
-            "id",
-            "check",
-            "check_name",
-            "current_state",
-            "previous_state",
-            "state_changed_at",
-            "consecutive_failures",
-            "consecutive_successes",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "updated_at", "check_name"]
 
 
 class CheckActionLogSerializer(serializers.ModelSerializer):

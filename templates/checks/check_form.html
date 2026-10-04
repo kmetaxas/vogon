@@ -24,9 +24,9 @@
                 <div class="form-help">Human-readable description of what this check monitors.</div>
             </div>
             <div class="form-group">
-                <label class="form-label">Instructions / System Prompt</label>
+                <label class="form-label">Instructions</label>
                 <textarea name="instructions" class="form-control" rows="4">{{ check.instructions|default:'' }}</textarea>
-                <div class="form-help">System prompt or instructions for the LLM when evaluating this check. Used in AI-Assisted and Autonomous modes.</div>
+                <div class="form-help">Instructions for the LLM when evaluating this check.</div>
             </div>
             <div class="form-group">
                 <label class="form-label">Schedule Type</label>
@@ -47,29 +47,6 @@
                 <input type="text" name="timezone" class="form-control" value="{{ check.timezone|default:'UTC' }}">
                 <div class="form-help">Timezone for cron schedules (e.g. UTC, America/New_York)</div>
             </div>
-            <div class="form-group">
-                <label class="form-label">Execution Mode</label>
-                <select name="execution_mode" class="form-control">
-                    {% for value, label in execution_modes %}
-                    <option value="{{ value }}" {% if check and check.execution_mode == value %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                </select>
-                <div class="form-help mode-help">
-                    <strong>Deterministic</strong> — Run predefined capabilities and evaluate with fixed rules<br>
-                    <strong>AI Assisted</strong> — Run predefined capabilities and ask LLM to interpret results<br>
-                    <strong>Autonomous</strong> — LLM decides what to investigate and runs tools dynamically
-                </div>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Evaluation Rules (JSON)</label>
-                <textarea name="evaluation_config" class="form-control" rows="6" id="id-evaluation-config"></textarea>
-                <div class="form-help">JSON object with rules for deterministic evaluation. Example: <code>{'rules': [{'type': 'numeric_comparison', 'path': 'cpu.usage_percent', 'operator': 'gt', 'threshold': 90}]}</code></div>
-            </div>
-            {% if check and check.evaluation_config %}
-            {{ check.evaluation_config|json_script:"evaluation-config-data" }}
-            {% else %}
-            <script type="application/json" id="evaluation-config-data">{}</script>
-            {% endif %}
             <div class="form-group">
                 <label class="form-label">Notification Config (JSON)</label>
                 <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
@@ -101,7 +78,6 @@
                         textarea.value = '{}';
                     }
                 }
-                populateTextarea('id-evaluation-config', 'evaluation-config-data', '{{ evaluation_config_raw|default:""|escapejs }}');
                 populateTextarea('id-notification-config', 'notification-config-data', '{{ notification_config_raw|default:""|escapejs }}');
             })();
             </script>

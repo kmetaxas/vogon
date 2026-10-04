@@ -2,7 +2,6 @@
 
 import json
 
-from django.core.exceptions import ValidationError
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -12,7 +11,6 @@ from apps.checks.models import (
     Check,
     CheckExecution,
     CheckVersion,
-    validate_capability_selectors,
 )
 from apps.core.mixins import OrganizationRequiredMixin
 
@@ -30,11 +28,9 @@ class CheckDetailView(OrganizationRequiredMixin, View):
     def get(self, request, check_id):
         check = get_object_or_404(Check, id=check_id, organization=self.organization)
         executions = CheckExecution.objects.filter(check=check).order_by("-triggered_at")[:20]
-        health_state = getattr(check, "health_state", None)
         context = {
             "check": check,
             "executions": executions,
-            "health_state": health_state,
         }
         return render(request, "checks/check_detail.html", context)
 
@@ -44,16 +40,13 @@ class CheckCreateView(OrganizationRequiredMixin, View):
         context = {
             "organization": self.organization,
             "schedule_types": Check.ScheduleType.choices,
-            "execution_modes": Check.ExecutionMode.choices,
         }
         return render(request, "checks/check_form.html", context)
 
     def post(self, request):
-        evaluation_config_raw = request.POST.get("evaluation_config", "{}").strip()
         notification_config_raw = request.POST.get("notification_config", "{}").strip()
 
         try:
-            evaluation_config = json.loads(evaluation_config_raw) if evaluation_config_raw else {}
             notification_config = (
                 json.loads(notification_config_raw) if notification_config_raw else {}
             )
@@ -65,9 +58,6 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 "schedule_type": request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
                 "schedule_expression": request.POST.get("schedule_expression", "60"),
                 "timezone": request.POST.get("timezone", "UTC"),
-                "execution_mode": request.POST.get(
-                    "execution_mode", Check.ExecutionMode.DETERMINISTIC
-                ),
             }
             return render(
                 request,
@@ -75,38 +65,8 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 {
                     "organization": self.organization,
                     "schedule_types": Check.ScheduleType.choices,
-                    "execution_modes": Check.ExecutionMode.choices,
                     "check": check,
                     "error": "Invalid JSON in config fields.",
-                    "evaluation_config_raw": evaluation_config_raw,
-                    "notification_config_raw": notification_config_raw,
-                },
-            )
-
-        try:
-            validate_capability_selectors(evaluation_config)
-        except ValidationError as exc:
-            check = {
-                "name": request.POST.get("name", ""),
-                "description": request.POST.get("description", ""),
-                "instructions": request.POST.get("instructions", ""),
-                "schedule_type": request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
-                "schedule_expression": request.POST.get("schedule_expression", "60"),
-                "timezone": request.POST.get("timezone", "UTC"),
-                "execution_mode": request.POST.get(
-                    "execution_mode", Check.ExecutionMode.DETERMINISTIC
-                ),
-            }
-            return render(
-                request,
-                "checks/check_form.html",
-                {
-                    "organization": self.organization,
-                    "schedule_types": Check.ScheduleType.choices,
-                    "execution_modes": Check.ExecutionMode.choices,
-                    "check": check,
-                    "error": " ".join(exc.messages),
-                    "evaluation_config_raw": evaluation_config_raw,
                     "notification_config_raw": notification_config_raw,
                 },
             )
@@ -119,8 +79,6 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             schedule_type=request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
             schedule_expression=request.POST.get("schedule_expression", "60"),
             timezone=request.POST.get("timezone", "UTC"),
-            execution_mode=request.POST.get("execution_mode", Check.ExecutionMode.DETERMINISTIC),
-            evaluation_config=evaluation_config,
             notification_config=notification_config,
             created_by=request.user,
         )
@@ -142,7 +100,6 @@ class CheckEditView(OrganizationRequiredMixin, View):
         context = {
             "check": check,
             "schedule_types": Check.ScheduleType.choices,
-            "execution_modes": Check.ExecutionMode.choices,
         }
         return render(request, "checks/check_form.html", context)
 
@@ -156,13 +113,10 @@ class CheckEditView(OrganizationRequiredMixin, View):
             "schedule_expression", check.schedule_expression
         )
         check.timezone = request.POST.get("timezone", check.timezone)
-        check.execution_mode = request.POST.get("execution_mode", check.execution_mode)
 
-        evaluation_config_raw = request.POST.get("evaluation_config", "{}").strip()
         notification_config_raw = request.POST.get("notification_config", "{}").strip()
 
         try:
-            evaluation_config = json.loads(evaluation_config_raw) if evaluation_config_raw else {}
             notification_config = (
                 json.loads(notification_config_raw) if notification_config_raw else {}
             )
@@ -173,30 +127,11 @@ class CheckEditView(OrganizationRequiredMixin, View):
                 {
                     "check": check,
                     "schedule_types": Check.ScheduleType.choices,
-                    "execution_modes": Check.ExecutionMode.choices,
                     "error": "Invalid JSON in config fields.",
-                    "evaluation_config_raw": evaluation_config_raw,
                     "notification_config_raw": notification_config_raw,
                 },
             )
 
-        try:
-            validate_capability_selectors(evaluation_config)
-        except ValidationError as exc:
-            return render(
-                request,
-                "checks/check_form.html",
-                {
-                    "check": check,
-                    "schedule_types": Check.ScheduleType.choices,
-                    "execution_modes": Check.ExecutionMode.choices,
-                    "error": " ".join(exc.messages),
-                    "evaluation_config_raw": evaluation_config_raw,
-                    "notification_config_raw": notification_config_raw,
-                },
-            )
-
-        check.evaluation_config = evaluation_config
         check.notification_config = notification_config
         check.save()
         try:
@@ -215,7 +150,6 @@ class CheckEditView(OrganizationRequiredMixin, View):
                 "description": check.description,
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
             },
         )
         return HttpResponseRedirect(reverse("checks:check-detail", kwargs={"check_id": check.id}))

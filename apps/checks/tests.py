@@ -14,21 +14,16 @@ from django.test import TestCase, override_settings
 from django.test.testcases import TransactionTestCase
 from django.utils import timezone
 
-from apps.checks.evaluation import EvaluationEngine, EvaluationError, HealthState, Severity
 from apps.checks.models import (
     Check,
     CheckActionLog,
-    CheckCapabilityExecution,
     CheckExecution,
-    CheckHealthState,
     CheckVersion,
 )
 from apps.core.models import Organization, OrganizationMembership, User
 from services.temporal_workers.activities import (
     call_llm,
-    create_check_capability_executions,
     dispatch_actions,
-    update_check_capability_execution,
 )
 
 
@@ -38,7 +33,6 @@ def _make_check(organization, name="Check", **kwargs):
         "name": name,
         "schedule_type": Check.ScheduleType.INTERVAL,
         "schedule_expression": "60",
-        "execution_mode": Check.ExecutionMode.DETERMINISTIC,
     }
     defaults.update(kwargs)
     return Check.objects.create(**defaults)
@@ -50,120 +44,6 @@ def _action_dispatcher():
 
 def _retry_manager():
     return importlib.import_module("services.checks.actions").RetryManager
-
-
-class EvaluationEngineTests(TestCase):
-    def test_numeric_comparison_gt_fires(self):
-        result = {"cpu_usage": 0.85}
-        rules = [
-            {
-                "type": "numeric_comparison",
-                "path": "cpu_usage",
-                "operator": "gt",
-                "threshold": 0.8,
-                "severity": "critical",
-            }
-        ]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.CRITICAL)
-        self.assertEqual(len(eval_result.findings), 1)
-        self.assertEqual(eval_result.findings[0].severity, Severity.CRITICAL)
-
-    def test_numeric_comparison_no_fire(self):
-        result = {"cpu_usage": 0.7}
-        rules = [
-            {
-                "type": "numeric_comparison",
-                "path": "cpu_usage",
-                "operator": "gt",
-                "threshold": 0.8,
-                "severity": "critical",
-            }
-        ]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.HEALTHY)
-        self.assertEqual(len(eval_result.findings), 0)
-
-    def test_aggregation_avg_fires(self):
-        result = {"nodes": [{"mem": 0.7}, {"mem": 0.9}, {"mem": 0.8}]}
-        rules = [
-            {
-                "type": "aggregation",
-                "path": "nodes.*.mem",
-                "operator": "avg",
-                "threshold": 0.79,
-                "comparison_operator": "gt",
-                "severity": "critical",
-            }
-        ]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.CRITICAL)
-        self.assertEqual(len(eval_result.findings), 1)
-        self.assertAlmostEqual(eval_result.findings[0].actual, 0.8)
-
-    def test_boolean_expression_fires(self):
-        result = {"cpu_usage": 0.9, "memory_usage": 0.95}
-        rules = [
-            {
-                "type": "boolean_expression",
-                "expression": "critical_cpu and critical_memory",
-                "conditions": [
-                    {"path": "cpu_usage", "operator": "gt", "threshold": 0.8},
-                    {"path": "memory_usage", "operator": "gt", "threshold": 0.9},
-                ],
-            }
-        ]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.CRITICAL)
-        self.assertEqual(len(eval_result.findings), 1)
-        self.assertEqual(eval_result.findings[0].severity, Severity.CRITICAL)
-
-    def test_presence_missing(self):
-        result = {"errors": None}
-        rules = [{"type": "presence", "path": "errors", "expected": False}]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.HEALTHY)
-
-    def test_invalid_rule_raises(self):
-        result = {}
-        rules = [
-            {
-                "type": "numeric_comparison",
-                "path": "missing",
-                "operator": "gt",
-                "threshold": 0.8,
-            }
-        ]
-        with self.assertRaises(EvaluationError):
-            EvaluationEngine.evaluate(result, rules)
-
-    def test_does_not_mutate_input(self):
-        result = {"cpu_usage": 0.85}
-        original = result.copy()
-        rules = [
-            {
-                "type": "numeric_comparison",
-                "path": "cpu_usage",
-                "operator": "gt",
-                "threshold": 0.8,
-            }
-        ]
-        EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(result, original)
-
-    def test_nested_path(self):
-        result = {"results": [{"value": {"cpu": 0.9}}]}
-        rules = [
-            {
-                "type": "numeric_comparison",
-                "path": "results.0.value.cpu",
-                "operator": "gt",
-                "threshold": 0.8,
-                "severity": "critical",
-            }
-        ]
-        eval_result = EvaluationEngine.evaluate(result, rules)
-        self.assertEqual(eval_result.state, HealthState.CRITICAL)
 
 
 class CheckSchedulerTests(TestCase):
@@ -195,20 +75,6 @@ class CheckSchedulerTests(TestCase):
         spec = CheckScheduler._build_spec(check)
 
         self.assertEqual(spec.cron_expressions[0], "0 */6 * * *")
-
-    def test_workflow_for_mode(self):
-        from services.checks.scheduler import CheckScheduler
-        from services.temporal_workers.workflows import (
-            AutonomousInvestigationWorkflow,
-            CheckWorkflow,
-        )
-
-        self.assertEqual(CheckScheduler._workflow_for_mode("deterministic"), CheckWorkflow)
-        self.assertEqual(CheckScheduler._workflow_for_mode("ai_assisted"), CheckWorkflow)
-        self.assertEqual(
-            CheckScheduler._workflow_for_mode("autonomous"),
-            AutonomousInvestigationWorkflow,
-        )
 
 
 class ActionDispatcherTests(TestCase):
@@ -351,7 +217,6 @@ class CheckAPITests(TestCase):
                 "name": "Created Check",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "120",
-                "execution_mode": Check.ExecutionMode.AI_ASSISTED,
             },
             content_type="application/json",
         )
@@ -395,15 +260,6 @@ class CheckAPITests(TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["check_name"], "Executed")
 
-    def test_check_health_state_list_filtered_by_org(self):
-        check = _make_check(self.organization, name="Healthy")
-        CheckHealthState.objects.create(check=check)
-        response = self.client.get("/api/check-health-states/")
-        self.assertEqual(response.status_code, 200)
-        data = response.json()["results"]
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["check_name"], "Healthy")
-
     def test_check_action_log_list_filtered_by_org(self):
         check = _make_check(self.organization, name="Logged")
         CheckActionLog.objects.create(
@@ -422,7 +278,6 @@ class CheckAPITests(TestCase):
         other_check = _make_check(other_org, name="Other Related")
         CheckVersion.objects.create(check=other_check, version_number=1, definition_snapshot={})
         CheckExecution.objects.create(check=other_check)
-        CheckHealthState.objects.create(check=other_check)
         CheckActionLog.objects.create(
             check=other_check,
             action_type=CheckActionLog.ActionType.WEBHOOK,
@@ -430,7 +285,6 @@ class CheckAPITests(TestCase):
         for endpoint in (
             "/api/check-versions/",
             "/api/check-executions/",
-            "/api/check-health-states/",
             "/api/check-action-logs/",
         ):
             response = self.client.get(endpoint)
@@ -471,17 +325,6 @@ class CheckImportExportTests(TestCase):
                     "name": "Imported Check",
                     "schedule_type": Check.ScheduleType.CRON,
                     "schedule_expression": "0 */6 * * *",
-                    "execution_mode": Check.ExecutionMode.AI_ASSISTED,
-                    "evaluation_config": {
-                        "rules": [
-                            {
-                                "type": "numeric_comparison",
-                                "path": "cpu",
-                                "operator": "gt",
-                                "threshold": 0.8,
-                            }
-                        ]
-                    },
                 },
             },
             content_type="application/json",
@@ -520,7 +363,6 @@ class CheckScheduleLifecycleTests(TestCase):
                 "name": "Scheduled Check",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "120",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
                 "enabled": True,
             },
             content_type="application/json",
@@ -583,7 +425,6 @@ class CheckScheduleLifecycleTests(TestCase):
                 "name": "Offline Check",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "120",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
                 "enabled": True,
             },
             content_type="application/json",
@@ -604,35 +445,21 @@ class CheckIntegrationTests(TestCase):
         self.client.force_login(self.user)
 
     @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
-    def test_check_lifecycle_deterministic(self, mock_create_schedule):
-        mock_create_schedule.return_value = {"schedule_id": "check-int", "status": "created"}
+    def test_check_lifecycle_autonomous(self, mock_create_schedule):
+        mock_create_schedule.return_value = {"schedule_id": "check-auto", "status": "created"}
 
         response = self.client.post(
             "/api/checks/",
             {
                 "organization": str(self.organization.id),
-                "name": "Integration Check",
+                "name": "Autonomous Check",
                 "schedule_type": Check.ScheduleType.INTERVAL,
-                "schedule_expression": "60",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": {
-                    "capabilities": [{"name": "cpu.check", "parameters": {}}],
-                    "rules": [
-                        {
-                            "type": "numeric_comparison",
-                            "path": "cpu",
-                            "operator": "gt",
-                            "threshold": 0.8,
-                            "severity": "critical",
-                        }
-                    ],
-                },
+                "schedule_expression": "120",
             },
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 201)
-        check = Check.objects.get(name="Integration Check")
-        self.assertEqual(check.execution_mode, Check.ExecutionMode.DETERMINISTIC)
+        check = Check.objects.get(name="Autonomous Check")
         mock_create_schedule.assert_called_once()
 
         execution = CheckExecution.objects.create(
@@ -642,9 +469,6 @@ class CheckIntegrationTests(TestCase):
             evaluation_result={"findings": [{"severity": "critical", "message": "CPU high"}]},
         )
         self.assertEqual(execution.health_state, CheckExecution.HealthState.CRITICAL)
-
-        result = EvaluationEngine.evaluate({"cpu": 0.85}, check.evaluation_config["rules"])
-        self.assertEqual(result.state, HealthState.CRITICAL)
 
         action_dispatcher = _action_dispatcher()
         check.notification_config = {
@@ -657,83 +481,11 @@ class CheckIntegrationTests(TestCase):
             ]
         }
         check.save()
-        finding_dicts = [
-            {"severity": f.severity.value, "message": f.message, "path": f.path}
-            for f in result.findings
-        ]
-        logs = action_dispatcher.dispatch(check, execution, finding_dicts)
+        logs = action_dispatcher.dispatch(
+            check, execution, [{"severity": "critical", "message": "CPU high"}]
+        )
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].action_type, CheckActionLog.ActionType.WEBHOOK)
-
-    @patch("apps.checks.api_views.CheckScheduler.create_schedule", new_callable=AsyncMock)
-    def test_check_lifecycle_ai_assisted(self, mock_create_schedule):
-        mock_create_schedule.return_value = {"schedule_id": "check-ai", "status": "created"}
-
-        response = self.client.post(
-            "/api/checks/",
-            {
-                "organization": str(self.organization.id),
-                "name": "AI Check",
-                "schedule_type": Check.ScheduleType.INTERVAL,
-                "schedule_expression": "120",
-                "execution_mode": Check.ExecutionMode.AI_ASSISTED,
-            },
-            content_type="application/json",
-        )
-        self.assertEqual(response.status_code, 201)
-        check = Check.objects.get(name="AI Check")
-        self.assertEqual(check.execution_mode, Check.ExecutionMode.AI_ASSISTED)
-        mock_create_schedule.assert_called_once()
-
-    def test_check_scheduler_workflow_selection(self):
-        from services.checks.scheduler import CheckScheduler
-        from services.temporal_workers.workflows import (
-            AutonomousInvestigationWorkflow,
-            CheckWorkflow,
-        )
-
-        det_check = _make_check(
-            self.organization,
-            name="Deterministic Integration",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
-        )
-        ai_check = _make_check(
-            self.organization,
-            name="AI Integration",
-            execution_mode=Check.ExecutionMode.AI_ASSISTED,
-        )
-        auto_check = _make_check(
-            self.organization,
-            name="Autonomous Integration",
-            execution_mode=Check.ExecutionMode.AUTONOMOUS,
-        )
-
-        self.assertEqual(CheckScheduler._workflow_for_mode(det_check.execution_mode), CheckWorkflow)
-        self.assertEqual(CheckScheduler._workflow_for_mode(ai_check.execution_mode), CheckWorkflow)
-        self.assertEqual(
-            CheckScheduler._workflow_for_mode(auto_check.execution_mode),
-            AutonomousInvestigationWorkflow,
-        )
-
-    @patch("services.checks.scheduler.get_temporal_client", new_callable=AsyncMock)
-    def test_check_workflow_execution_is_mocked_by_scheduler_trigger(self, mock_get_client):
-        from services.checks.scheduler import TASK_QUEUE, CheckScheduler
-        from services.temporal_workers.workflows import CheckWorkflow
-
-        check = _make_check(self.organization, name="Mocked Workflow Check")
-        mock_client = AsyncMock()
-        mock_client.execute_workflow.return_value = {"workflow_id": "mock-workflow"}
-        mock_get_client.return_value = mock_client
-
-        result = asyncio.run(CheckScheduler.trigger_now(check))
-
-        self.assertEqual(result, {"workflow_id": "mock-workflow", "status": "triggered"})
-        mock_client.execute_workflow.assert_awaited_once_with(
-            CheckWorkflow.run,
-            id=mock_client.execute_workflow.call_args.kwargs["id"],
-            args=[str(check.id), None, False],
-            task_queue=TASK_QUEUE,
-        )
 
     def test_concurrent_limit_blocks_at_max(self):
         check = _make_check(self.organization)
@@ -1213,7 +965,6 @@ class CheckUIViewTests(TestCase):
                 "name": "Created Via UI",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -1227,7 +978,6 @@ class CheckUIViewTests(TestCase):
                 "name": "Edited Name",
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -1292,34 +1042,12 @@ class CheckUIViewTests(TestCase):
                 "name": "Config Edit Test",
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
-                "evaluation_config": (
-                    '{"rules": [{"type": "numeric_comparison", "path": "cpu.usage_percent", '
-                    '"operator": "gt", "threshold": 90}]}'
-                ),
                 "notification_config": '{"channels": ["email"]}',
             },
         )
         self.assertEqual(response.status_code, 302)
         check.refresh_from_db()
-        self.assertEqual(check.evaluation_config["rules"][0]["path"], "cpu.usage_percent")
         self.assertEqual(check.notification_config["channels"], ["email"])
-
-    def test_edit_invalid_config_shows_error(self):
-        check = _make_check(self.organization, name="Invalid Config Test")
-        response = self.client.post(
-            f"/checks/{check.id}/edit/",
-            {
-                "name": "Invalid Config Test",
-                "schedule_type": check.schedule_type,
-                "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
-                "evaluation_config": "{invalid json}",
-                "notification_config": "{}",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Invalid JSON")
 
     def test_create_saves_config(self):
         response = self.client.post(
@@ -1328,31 +1056,12 @@ class CheckUIViewTests(TestCase):
                 "name": "Config Create Test",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": '{"rules": []}',
                 "notification_config": '{"channels": ["slack"]}',
             },
         )
         self.assertEqual(response.status_code, 302)
         check = Check.objects.get(name="Config Create Test")
-        self.assertEqual(check.evaluation_config, {"rules": []})
-        self.assertEqual(check.notification_config, {"channels": ["slack"]})
-
-    def test_create_invalid_config_shows_error(self):
-        response = self.client.post(
-            "/checks/new/",
-            {
-                "name": "Invalid Create Test",
-                "schedule_type": Check.ScheduleType.INTERVAL,
-                "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": "{bad json}",
-                "notification_config": "{}",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Invalid JSON")
-        self.assertFalse(Check.objects.filter(name="Invalid Create Test").exists())
+        self.assertEqual(check.notification_config["channels"], ["slack"])
 
     def test_config_round_trip(self):
         # Create with config
@@ -1362,18 +1071,11 @@ class CheckUIViewTests(TestCase):
                 "name": "Round Trip Test",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": (
-                    '{"rules": [{"type": "numeric_comparison", '
-                    '"path": "cpu.usage_percent", "operator": "gt", '
-                    '"threshold": 90}]}'
-                ),
                 "notification_config": '{"channels": ["email"]}',
             },
         )
         self.assertEqual(response.status_code, 302)
         check = Check.objects.get(name="Round Trip Test")
-        self.assertEqual(check.evaluation_config["rules"][0]["path"], "cpu.usage_percent")
         self.assertEqual(check.notification_config["channels"], ["email"])
 
         # Edit and verify config persists
@@ -1383,19 +1085,12 @@ class CheckUIViewTests(TestCase):
                 "name": "Round Trip Test Updated",
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
-                "evaluation_config": (
-                    '{"rules": [{"type": "numeric_comparison", '
-                    '"path": "memory.usage_percent", "operator": "gt", '
-                    '"threshold": 80}]}'
-                ),
                 "notification_config": '{"channels": ["email", "slack"]}',
             },
         )
         self.assertEqual(response.status_code, 302)
         check.refresh_from_db()
         self.assertEqual(check.name, "Round Trip Test Updated")
-        self.assertEqual(check.evaluation_config["rules"][0]["path"], "memory.usage_percent")
         self.assertEqual(check.notification_config["channels"], ["email", "slack"])
 
 
@@ -1416,7 +1111,6 @@ class CheckScheduleValidationTests(TestCase):
             "name": "Validation Check",
             "schedule_type": Check.ScheduleType.INTERVAL,
             "schedule_expression": "60",
-            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
         }
         data.update(overrides)
         return data
@@ -1512,7 +1206,6 @@ class CheckScheduleValidationTests(TestCase):
             name="Clean Empty",
             schedule_type=Check.ScheduleType.INTERVAL,
             schedule_expression="",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
         )
         with self.assertRaises(ValidationError):
             check.clean()
@@ -1525,7 +1218,6 @@ class CheckScheduleValidationTests(TestCase):
             name="Clean Cron",
             schedule_type=Check.ScheduleType.CRON,
             schedule_expression="bad cron",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
         )
         with self.assertRaises(ValidationError):
             check.clean()
@@ -1538,7 +1230,6 @@ class CheckScheduleValidationTests(TestCase):
             name="Clean Interval",
             schedule_type=Check.ScheduleType.INTERVAL,
             schedule_expression="nope",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
         )
         with self.assertRaises(ValidationError):
             check.clean()
@@ -1549,148 +1240,8 @@ class CheckScheduleValidationTests(TestCase):
             name="Clean Valid",
             schedule_type=Check.ScheduleType.CRON,
             schedule_expression="0 9 * * *",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
         )
         check.clean()
-
-
-class CheckSelectorValidationTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(username="sel_user", password="pass")
-        self.organization = Organization.objects.create(name="Sel Org", slug="sel-org")
-        OrganizationMembership.objects.create(
-            user=self.user,
-            organization=self.organization,
-            role=OrganizationMembership.Role.OWNER,
-        )
-        self.client.force_login(self.user)
-
-    def _check(self, evaluation_config):
-        return Check(
-            organization=self.organization,
-            name="Selector Check",
-            schedule_type=Check.ScheduleType.INTERVAL,
-            schedule_expression="60",
-            execution_mode=Check.ExecutionMode.DETERMINISTIC,
-            evaluation_config=evaluation_config,
-        )
-
-    def test_check_selector_validation_model_accepts_with_and_without_selector(self):
-        from django.core.exceptions import ValidationError
-
-        without = self._check({"capabilities": [{"name": "cpu.check", "parameters": {}}]})
-        without.clean()
-
-        with_selector = self._check(
-            {
-                "capabilities": [
-                    {
-                        "name": "cpu.check",
-                        "parameters": {},
-                        "marvin_id": "",
-                        "selector": {
-                            "hostname": "web-1",
-                            "region": ["us-east-1"],
-                            "labels": {"env": "prod"},
-                            "resource_ids": ["res-1"],
-                            "marvin_ids": ["m-1"],
-                        },
-                    }
-                ]
-            }
-        )
-        with_selector.clean()
-
-        empty_selector = self._check({"capabilities": [{"name": "cpu.check", "selector": {}}]})
-        empty_selector.clean()
-
-        bad = self._check(
-            {"capabilities": [{"name": "cpu.check", "selector": {"unknown_key": "x"}}]}
-        )
-        with self.assertRaises(ValidationError):
-            bad.clean()
-
-        bad_type = self._check(
-            {"capabilities": [{"name": "cpu.check", "selector": {"hostname": 123}}]}
-        )
-        with self.assertRaises(ValidationError):
-            bad_type.clean()
-
-    def test_check_selector_validation_serializer_accepts_with_and_without_selector(self):
-        from apps.checks.serializers import CheckSerializer
-
-        base = {
-            "organization": str(self.organization.id),
-            "name": "Serializer Selector Check",
-            "schedule_type": Check.ScheduleType.INTERVAL,
-            "schedule_expression": "60",
-            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-        }
-
-        without = CheckSerializer(
-            data={**base, "evaluation_config": {"capabilities": [{"name": "cpu.check"}]}}
-        )
-        self.assertTrue(without.is_valid(), without.errors)
-
-        with_selector = CheckSerializer(
-            data={
-                **base,
-                "evaluation_config": {
-                    "capabilities": [{"name": "cpu.check", "selector": {"labels": {"env": "prod"}}}]
-                },
-            }
-        )
-        self.assertTrue(with_selector.is_valid(), with_selector.errors)
-
-        bad = CheckSerializer(
-            data={
-                **base,
-                "evaluation_config": {
-                    "capabilities": [{"name": "cpu.check", "selector": {"bogus": "x"}}]
-                },
-            }
-        )
-        self.assertFalse(bad.is_valid())
-
-    def test_check_selector_validation_view_preserves_selector(self):
-        response = self.client.post(
-            "/checks/new/",
-            {
-                "name": "View Selector Check",
-                "schedule_type": Check.ScheduleType.INTERVAL,
-                "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": (
-                    '{"capabilities": [{"name": "cpu.check", "parameters": {}, '
-                    '"marvin_id": "", "selector": {"hostname": "web-1", '
-                    '"labels": {"env": "prod"}}}]}'
-                ),
-                "notification_config": "{}",
-            },
-        )
-        self.assertEqual(response.status_code, 302)
-        check = Check.objects.get(name="View Selector Check")
-        selector = check.evaluation_config["capabilities"][0]["selector"]
-        self.assertEqual(selector["hostname"], "web-1")
-        self.assertEqual(selector["labels"], {"env": "prod"})
-
-    def test_check_selector_validation_view_rejects_bad_selector(self):
-        response = self.client.post(
-            "/checks/new/",
-            {
-                "name": "Bad Selector Check",
-                "schedule_type": Check.ScheduleType.INTERVAL,
-                "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
-                "evaluation_config": (
-                    '{"capabilities": [{"name": "cpu.check", "selector": {"hostname": 123}}]}'
-                ),
-                "notification_config": "{}",
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "hostname")
-        self.assertFalse(Check.objects.filter(name="Bad Selector Check").exists())
 
 
 class DispatchActionsActivityTests(TransactionTestCase):
@@ -1845,44 +1396,6 @@ class CheckExecutionActivityTests(TransactionTestCase):
         self.assertIsNotNone(execution.completed_at)
 
 
-class CheckCapabilityExecutionModelTests(TestCase):
-    def setUp(self):
-        self.organization = Organization.objects.create(
-            name="CapExec Org", slug=f"capexec-org-{uuid.uuid4().hex[:8]}"
-        )
-
-    def test_defaults_and_org_scoping(self):
-        check = _make_check(self.organization, name="CapExec Check")
-        execution = CheckExecution.objects.create(check=check)
-        cap_exec = CheckCapabilityExecution.objects.create(
-            check_execution=execution,
-            capability_name="kubernetes.get_logs",
-        )
-        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
-        self.assertEqual(cap_exec.result_json, {})
-        self.assertEqual(cap_exec.input_tokens, 0)
-        self.assertEqual(cap_exec.output_tokens, 0)
-        self.assertEqual(cap_exec.cost, Decimal("0.00"))
-        self.assertIsNone(cap_exec.marvin)
-        self.assertIsNone(cap_exec.target_set)
-        self.assertIsNone(cap_exec.started_at)
-        self.assertIsNone(cap_exec.completed_at)
-        self.assertIsNotNone(cap_exec.created_at)
-        self.assertEqual(cap_exec.check_execution.check.organization, self.organization)
-        self.assertFalse(hasattr(cap_exec, "organization_id"))
-
-    def test_related_name_and_cascade(self):
-        check = _make_check(self.organization, name="CapExec Cascade")
-        execution = CheckExecution.objects.create(check=check)
-        CheckCapabilityExecution.objects.create(
-            check_execution=execution,
-            capability_name="network.ping",
-        )
-        self.assertEqual(execution.capability_executions.count(), 1)
-        execution.delete()
-        self.assertEqual(CheckCapabilityExecution.objects.count(), 0)
-
-
 class CheckSchedulerResilienceTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="res_user", password="pass")
@@ -1921,7 +1434,7 @@ class CheckSchedulerResilienceTests(TestCase):
         mock_desc.schedule.state.paused = False
         mock_handle.describe.return_value = mock_desc
         mock_client = AsyncMock()
-        mock_client.get_schedule_handle.return_value = mock_handle
+        mock_client.get_schedule_handle = Mock(return_value=mock_handle)
         mock_get_client.return_value = mock_client
 
         result = asyncio.run(CheckScheduler.update_schedule(check))
@@ -1938,7 +1451,7 @@ class CheckSchedulerResilienceTests(TestCase):
         mock_desc.schedule.state.paused = True
         mock_handle.describe.return_value = mock_desc
         mock_client = AsyncMock()
-        mock_client.get_schedule_handle.return_value = mock_handle
+        mock_client.get_schedule_handle = Mock(return_value=mock_handle)
         mock_get_client.return_value = mock_client
 
         result = asyncio.run(CheckScheduler.update_schedule(check))
@@ -1954,7 +1467,6 @@ class CheckSchedulerResilienceTests(TestCase):
                 "name": "UI Create Scheduler",
                 "schedule_type": Check.ScheduleType.INTERVAL,
                 "schedule_expression": "300",
-                "execution_mode": Check.ExecutionMode.DETERMINISTIC,
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -1970,7 +1482,6 @@ class CheckSchedulerResilienceTests(TestCase):
                 "name": "UI Edit Scheduler Updated",
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
-                "execution_mode": check.execution_mode,
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -2023,44 +1534,6 @@ class CheckBudgetMigrationTests(TransactionTestCase):
             name="Budget Org", slug=f"budget-org-{uuid.uuid4().hex[:8]}"
         )
 
-    def test_check_budget_migration_legacy_max_iterations(self):
-
-        check = _make_check(self.organization, name="Legacy Budget")
-        check.execution_budget = {"max_iterations": 8}
-        check.save(update_fields=["execution_budget"])
-
-        call_command("migrate", "checks", "0004")
-        call_command("migrate", "checks", "0005")
-
-        check.refresh_from_db()
-        self.assertEqual(check.execution_budget["max_executions_per_session"], 8)
-        self.assertEqual(check.execution_budget["executions_used"], 0)
-        self.assertEqual(check.execution_budget["max_targets_per_session"], 200)
-        self.assertNotIn("max_iterations", check.execution_budget)
-
-    def test_check_budget_migration_defaults_for_empty(self):
-        check = _make_check(self.organization, name="Empty Budget")
-        check.execution_budget = {}
-        check.save(update_fields=["execution_budget"])
-
-        call_command("migrate", "checks", "0004")
-        call_command("migrate", "checks", "0005")
-
-        check.refresh_from_db()
-        self.assertEqual(check.execution_budget["max_executions_per_session"], 100)
-        self.assertEqual(check.execution_budget["executions_used"], 0)
-
-    def test_check_budget_migration_reverse(self):
-        check = _make_check(self.organization, name="Reverse Budget")
-        check.execution_budget = {"max_executions_per_session": 12}
-        check.save(update_fields=["execution_budget"])
-
-        call_command("migrate", "checks", "0005")
-        call_command("migrate", "checks", "0004")
-
-        check.refresh_from_db()
-        self.assertEqual(check.execution_budget["max_iterations"], 12)
-
     def test_check_model_clean_normalizes_legacy_budget(self):
         check = _make_check(self.organization, name="Clean Legacy")
         check.execution_budget = {"max_iterations": 5}
@@ -2083,13 +1556,13 @@ class CheckBudgetMigrationTests(TransactionTestCase):
             "name": "Serializer Legacy",
             "schedule_type": Check.ScheduleType.INTERVAL,
             "schedule_expression": "60",
-            "execution_mode": Check.ExecutionMode.DETERMINISTIC,
             "execution_budget": {"max_iterations": 7},
         }
         serializer = CheckSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(
-            serializer.validated_data["execution_budget"]["max_executions_per_session"], 7
+            serializer.validated_data["execution_budget"]["max_executions_per_session"],  # type: ignore[index]
+            7,
         )
 
     def test_load_check_context_returns_sessionbudget_format(self):
@@ -2103,60 +1576,6 @@ class CheckBudgetMigrationTests(TransactionTestCase):
         self.assertEqual(result["execution_budget"]["max_executions_per_session"], 3)
         self.assertEqual(result["execution_budget"]["executions_used"], 0)
         self.assertNotIn("max_iterations", result["execution_budget"])
-
-
-class CheckBudgetReservationTests(TransactionTestCase):
-    def setUp(self):
-        self.organization = Organization.objects.create(
-            name="Check Budget Org", slug=f"check-budget-org-{uuid.uuid4().hex[:8]}"
-        )
-
-    def test_check_budget_reserve(self):
-        from apps.checks.budget import check_and_reserve_budget
-        from apps.sessions.budget import BudgetExceeded
-
-        check = _make_check(self.organization, name="Reserve Budget")
-        check.execution_budget = {
-            "max_executions_per_session": 2,
-            "max_targets_per_session": 5,
-            "max_concurrent_executions": 1,
-        }
-        check.save(update_fields=["execution_budget"])
-
-        budget = check_and_reserve_budget(check, 3)
-        self.assertEqual(budget.executions_used, 1)
-        self.assertEqual(budget.targets_used, 3)
-        self.assertEqual(budget.concurrent_running, 1)
-
-        check.refresh_from_db()
-        self.assertEqual(check.execution_budget["executions_used"], 1)
-        self.assertEqual(check.execution_budget["targets_used"], 3)
-        self.assertEqual(check.execution_budget["concurrent_running"], 1)
-
-        # Concurrent limit (max 1) is now exhausted.
-        with self.assertRaises(BudgetExceeded):
-            check_and_reserve_budget(check, 1)
-
-    def test_check_budget_release(self):
-        from apps.checks.budget import check_and_reserve_budget, release_execution_budget
-
-        check = _make_check(self.organization, name="Release Budget")
-        check.execution_budget = {
-            "max_executions_per_session": 5,
-            "max_targets_per_session": 10,
-            "max_concurrent_executions": 5,
-        }
-        check.save(update_fields=["execution_budget"])
-
-        check_and_reserve_budget(check, 4)
-        budget = release_execution_budget(check, 4)
-        self.assertEqual(budget.concurrent_running, 0)
-        self.assertEqual(budget.targets_used, 0)
-        self.assertEqual(budget.executions_used, 1)
-
-        check.refresh_from_db()
-        self.assertEqual(check.execution_budget["concurrent_running"], 0)
-        self.assertEqual(check.execution_budget["targets_used"], 0)
 
 
 class CheckExecutionTemplateTests(TestCase):
@@ -2225,95 +1644,3 @@ class CheckExecutionTemplateTests(TestCase):
         self.assertContains(response, "200 in")
         self.assertContains(response, "100 out")
         self.assertContains(response, "disk.check")
-
-
-class CheckCapabilityExecutionLifecycleTests(TransactionTestCase):
-    def setUp(self):
-        from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
-
-        self.user = User.objects.create_user(username="cap_user", password="pass")
-        self.organization = Organization.objects.create(
-            name="Cap Org", slug=f"cap-org-{uuid.uuid4().hex[:8]}"
-        )
-        OrganizationMembership.objects.create(
-            user=self.user,
-            organization=self.organization,
-            role=OrganizationMembership.Role.OWNER,
-        )
-        self.check = _make_check(self.organization, name="Cap Check")
-        self.execution = CheckExecution.objects.create(check=self.check)
-        self.capability = Capability.objects.create(
-            organization=self.organization, name="cpu.check"
-        )
-        self.marvin = Marvin.objects.create(
-            organization=self.organization,
-            name="cap-marvin",
-            client_id="cap-client",
-            status=Marvin.Status.ONLINE,
-        )
-        self.marvin.capabilities.add(self.capability)
-        self.target_set = ResolvedTargetSet.objects.create(
-            organization=self.organization,
-            capability=self.capability,
-            selector={},
-            snapshot=[str(self.marvin.id)],
-            snapshot_metadata={"count": 1},
-            expires_at=timezone.now(),
-        )
-
-    def test_create_check_capability_executions(self):
-        result = asyncio.run(
-            create_check_capability_executions(
-                str(self.execution.id),
-                [str(self.marvin.id)],
-                self.capability.name,
-                str(self.target_set.id),
-                {"max_targets": 1},
-            )
-        )
-        self.assertEqual(len(result), 1)
-        cap_exec = CheckCapabilityExecution.objects.get(id=result[0]["id"])
-        self.assertEqual(cap_exec.check_execution, self.execution)
-        self.assertEqual(cap_exec.capability_name, self.capability.name)
-        self.assertEqual(cap_exec.marvin, self.marvin)
-        self.assertEqual(cap_exec.target_set, self.target_set)
-        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
-
-    def test_update_check_capability_execution_transitions(self):
-        cap_exec = CheckCapabilityExecution.objects.create(
-            check_execution=self.execution,
-            capability_name=self.capability.name,
-            marvin=self.marvin,
-        )
-        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.PENDING)
-        self.assertIsNone(cap_exec.started_at)
-        self.assertIsNone(cap_exec.completed_at)
-
-        asyncio.run(update_check_capability_execution(str(cap_exec.id), "running"))
-        cap_exec.refresh_from_db()
-        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.RUNNING)
-        self.assertIsNotNone(cap_exec.started_at)
-        self.assertIsNone(cap_exec.completed_at)
-
-        asyncio.run(
-            update_check_capability_execution(
-                str(cap_exec.id),
-                "completed",
-                result={
-                    "status": "ok",
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "cost": "0.01",
-                },
-            )
-        )
-        cap_exec.refresh_from_db()
-        self.assertEqual(cap_exec.status, CheckCapabilityExecution.Status.COMPLETED)
-        self.assertIsNotNone(cap_exec.completed_at)
-        self.assertEqual(
-            cap_exec.result_json,
-            {"status": "ok", "input_tokens": 10, "output_tokens": 5, "cost": "0.01"},
-        )
-        self.assertEqual(cap_exec.input_tokens, 10)
-        self.assertEqual(cap_exec.output_tokens, 5)
-        self.assertEqual(cap_exec.cost, Decimal("0.01"))

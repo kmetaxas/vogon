@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from django.utils import timezone
 
-from apps.checks.evaluation import HealthState, Severity
+from apps.checks.enums import HealthState, Severity
 from apps.checks.models import Check, CheckActionLog, CheckExecution
 
 logger = logging.getLogger(__name__)

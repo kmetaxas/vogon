@@ -19,7 +19,6 @@ from temporalio.client import (
 from services.temporal_workers.client import get_temporal_client
 from services.temporal_workers.workflows import (
     AutonomousInvestigationWorkflow,
-    CheckWorkflow,
 )
 
 TASK_QUEUE = os.environ.get("TEMPORAL_TASK_QUEUE", "vogon")
@@ -29,12 +28,6 @@ class CheckScheduler:
     @classmethod
     def _schedule_id(cls, check_id: str) -> str:
         return f"check-{check_id}"
-
-    @classmethod
-    def _workflow_for_mode(cls, mode: str) -> type:
-        if mode == "autonomous":
-            return AutonomousInvestigationWorkflow
-        return CheckWorkflow
 
     @classmethod
     async def create_schedule(cls, check) -> dict:
@@ -111,7 +104,7 @@ class CheckScheduler:
     @classmethod
     async def trigger_now(cls, check, dry_run: bool = False) -> dict:
         client: Client = await get_temporal_client()
-        workflow_cls = cls._workflow_for_mode(check.execution_mode)
+        workflow_cls = AutonomousInvestigationWorkflow
         workflow_id = f"check-{check.id}-manual-{datetime.utcnow().isoformat()}"
 
         result = await client.execute_workflow(
@@ -124,7 +117,7 @@ class CheckScheduler:
 
     @classmethod
     def _build_schedule(cls, check) -> Schedule:
-        workflow_cls = cls._workflow_for_mode(check.execution_mode)
+        workflow_cls = AutonomousInvestigationWorkflow
         schedule_id = cls._schedule_id(str(check.id))
         return Schedule(
             action=ScheduleActionStartWorkflow(

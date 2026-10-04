@@ -10,84 +10,6 @@ from pydantic import ValidationError as PydanticValidationError
 
 from apps.core.models import Organization
 
-# Keys accepted inside a capability ``selector`` dict. Mirrors the fields of
-# ``apps.marvins.selectors.TargetSelector`` so configs stay compatible with the
-# discovery engine.
-SELECTOR_LIST_FIELDS = (
-    "hostname",
-    "region",
-    "availability_zone",
-    "provider",
-    "resource_ids",
-    "marvin_ids",
-)
-SELECTOR_ALLOWED_KEYS = SELECTOR_LIST_FIELDS + ("labels",)
-
-
-def validate_capability_selector(selector, *, index=None):
-    """Validate an optional capability selector dict.
-
-    The selector is optional: ``None`` and ``{}`` are accepted. When present it
-    must be a JSON object whose keys are a subset of ``SELECTOR_ALLOWED_KEYS``.
-    List fields accept either a single string or a list of strings; ``labels``
-    must be an object mapping string keys to a string or list of strings.
-
-    Returns the selector unchanged so callers can chain validation.
-    """
-    prefix = f"capabilities[{index}].selector: " if index is not None else "selector: "
-    if selector is None:
-        return selector
-    if not isinstance(selector, dict):
-        raise ValidationError(f"{prefix}must be a JSON object.")
-
-    for key, value in selector.items():
-        if key not in SELECTOR_ALLOWED_KEYS:
-            raise ValidationError(f"{prefix}unknown key '{key}'.")
-        if key == "labels":
-            if not isinstance(value, dict):
-                raise ValidationError(f"{prefix}'labels' must be a JSON object.")
-            for label_key, label_value in value.items():
-                if not isinstance(label_key, str):
-                    raise ValidationError(f"{prefix}'labels' keys must be strings.")
-                if isinstance(label_value, list):
-                    if not all(isinstance(item, str) for item in label_value):
-                        raise ValidationError(
-                            f"{prefix}'labels.{label_key}' must be a string or list of strings."
-                        )
-                elif not isinstance(label_value, str):
-                    raise ValidationError(
-                        f"{prefix}'labels.{label_key}' must be a string or list of strings."
-                    )
-        elif isinstance(value, str):
-            continue
-        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-            continue
-        else:
-            raise ValidationError(f"{prefix}'{key}' must be a string or list of strings.")
-
-    return selector
-
-
-def validate_capability_selectors(evaluation_config):
-    """Validate the optional ``selector`` on every capability entry.
-
-    Configs without a ``capabilities`` list, or whose entries omit ``selector``,
-    are accepted unchanged for backward compatibility.
-    """
-    if not isinstance(evaluation_config, dict):
-        return evaluation_config
-    capabilities = evaluation_config.get("capabilities")
-    if not capabilities:
-        return evaluation_config
-    if not isinstance(capabilities, list):
-        raise ValidationError("evaluation_config.capabilities must be a list.")
-    for index, capability in enumerate(capabilities):
-        if not isinstance(capability, dict):
-            raise ValidationError(f"capabilities[{index}] must be a JSON object.")
-        if "selector" in capability:
-            validate_capability_selector(capability.get("selector"), index=index)
-    return evaluation_config
-
 
 def normalize_execution_budget(budget):
     from apps.sessions.budget import SessionBudget
@@ -114,11 +36,6 @@ class Check(models.Model):
         INTERVAL = "interval", "Interval"
         CRON = "cron", "Cron"
 
-    class ExecutionMode(models.TextChoices):
-        DETERMINISTIC = "deterministic", "Deterministic"
-        AI_ASSISTED = "ai_assisted", "AI Assisted"
-        AUTONOMOUS = "autonomous", "Autonomous"
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
         Organization,
@@ -129,10 +46,7 @@ class Check(models.Model):
     description = models.TextField(blank=True)
     instructions = models.TextField(
         blank=True,
-        help_text=(
-            "System prompt or instructions for the LLM when evaluating this check. "
-            "Used in AI-Assisted and Autonomous modes."
-        ),
+        help_text="Instructions for the LLM when evaluating this check.",
     )
     enabled = models.BooleanField(default=True)
     schedule_type = models.CharField(
@@ -144,15 +58,6 @@ class Check(models.Model):
         help_text="e.g. '60' for interval seconds, or '0 9 * * *' for cron",
     )
     timezone = models.CharField(max_length=50, default="UTC")
-    execution_mode = models.CharField(
-        max_length=20,
-        choices=ExecutionMode.choices,
-    )
-    evaluation_config = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Rules and thresholds for deterministic evaluation",
-    )
     notification_config = models.JSONField(
         default=dict,
         blank=True,
@@ -212,7 +117,6 @@ class Check(models.Model):
             if seconds <= 0:
                 raise ValidationError("Interval must be a positive integer (seconds).")
 
-        validate_capability_selectors(self.evaluation_config)
         if self.execution_budget is not None:
             self.execution_budget = normalize_execution_budget(self.execution_budget)
 
@@ -374,90 +278,6 @@ class CheckExecution(models.Model):
         max_concurrent = getattr(settings, "CHECK_MAX_CONCURRENT_PER_ORG", 5)
         current = cls.concurrent_count_for_org(organization)
         return current < max_concurrent
-
-
-class CheckCapabilityExecution(models.Model):
-    """Per-Marvin execution tracking during a Check fanout."""
-
-    objects = models.Manager()
-
-    class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        RUNNING = "running", "Running"
-        COMPLETED = "completed", "Completed"
-        FAILED = "failed", "Failed"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    check_execution = models.ForeignKey(
-        CheckExecution,
-        on_delete=models.CASCADE,
-        related_name="capability_executions",
-    )
-    capability_name = models.CharField(max_length=255)
-    marvin = models.ForeignKey(
-        "marvins.Marvin",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="check_capability_executions",
-    )
-    target_set = models.ForeignKey(
-        "marvins.ResolvedTargetSet",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="check_capability_executions",
-    )
-    status = models.CharField(
-        max_length=20,
-        choices=Status.choices,
-        default=Status.PENDING,
-    )
-    result_json = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True)
-    input_tokens = models.PositiveIntegerField(default=0)
-    output_tokens = models.PositiveIntegerField(default=0)
-    cost = models.DecimalField(max_digits=14, decimal_places=6, default=Decimal("0.00"))
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [
-            models.Index(fields=["check_execution", "status"]),
-        ]
-
-    def __str__(self):
-        return f"{self.capability_name} ({self.status})"
-
-
-class CheckHealthState(models.Model):
-    objects = models.Manager()
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    check = models.OneToOneField(
-        Check,
-        on_delete=models.CASCADE,
-        related_name="health_state",
-    )
-    current_state = models.CharField(
-        max_length=20,
-        choices=CheckExecution.HealthState.choices,
-        default=CheckExecution.HealthState.UNKNOWN,
-    )
-    previous_state = models.CharField(
-        max_length=20,
-        choices=CheckExecution.HealthState.choices,
-        default=CheckExecution.HealthState.UNKNOWN,
-    )
-    state_changed_at = models.DateTimeField(null=True, blank=True)
-    consecutive_failures = models.PositiveIntegerField(default=0)
-    consecutive_successes = models.PositiveIntegerField(default=0)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.check.name}: {self.current_state}"
 
 
 class CheckActionLog(models.Model):

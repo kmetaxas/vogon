@@ -9,13 +9,11 @@ from apps.checks.models import (
     Check,
     CheckActionLog,
     CheckExecution,
-    CheckHealthState,
     CheckVersion,
 )
 from apps.checks.serializers import (
     CheckActionLogSerializer,
     CheckExecutionSerializer,
-    CheckHealthStateSerializer,
     CheckSerializer,
     CheckVersionSerializer,
 )
@@ -126,8 +124,6 @@ class CheckViewSet(viewsets.ModelViewSet):
                 "schedule_type": check.schedule_type,
                 "schedule_expression": check.schedule_expression,
                 "timezone": check.timezone,
-                "execution_mode": check.execution_mode,
-                "evaluation_config": check.evaluation_config,
                 "notification_config": check.notification_config,
                 "execution_budget": check.execution_budget,
             },
@@ -151,17 +147,15 @@ class CheckViewSet(viewsets.ModelViewSet):
 
         schedule_type = check_data.get("schedule_type", Check.ScheduleType.INTERVAL)
         schedule_expression = check_data.get("schedule_expression", "60")
-        execution_mode = check_data.get("execution_mode", Check.ExecutionMode.DETERMINISTIC)
 
         check = Check.objects.create(
             organization=organization,
             name=name,
             description=check_data.get("description", ""),
+            instructions=check_data.get("instructions", ""),
             schedule_type=schedule_type,
             schedule_expression=schedule_expression,
             timezone=check_data.get("timezone", "UTC"),
-            execution_mode=execution_mode,
-            evaluation_config=check_data.get("evaluation_config", {}),
             notification_config=check_data.get("notification_config", {}),
             execution_budget=check_data.get("execution_budget", {}),
             created_by=self.request.user,
@@ -191,12 +185,6 @@ class CheckVersionViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
 class CheckExecutionViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
     queryset = CheckExecution.objects.all()
     serializer_class = CheckExecutionSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-
-class CheckHealthStateViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
-    queryset = CheckHealthState.objects.all()
-    serializer_class = CheckHealthStateSerializer
     permission_classes = [permissions.IsAuthenticated]
 
 
