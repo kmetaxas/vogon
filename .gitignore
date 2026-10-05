@@ -167,3 +167,6 @@ oldstuff
 tmp
 .omo
 **/staticfiles
+apps/core/fixtures/organizations.json
+apps/core/fixtures/users.json
+apps/llm/fixtures/llmproviders.json

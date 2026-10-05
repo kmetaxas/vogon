@@ -5,7 +5,7 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, cast
 
@@ -95,7 +95,7 @@ async def execute_capability(
             "thread_id": thread_id,
             "capability_name": capability_name,
             "parameters_json": json.dumps(parameters),
-            "deadline_unix_ms": int((datetime.now(datetime.timezone.utc).timestamp() + 300) * 1000),
+            "deadline_unix_ms": int((datetime.now(UTC).timestamp() + 300) * 1000),
             "target_set_id": target_set_id or "",
             "execution_mode": execution_mode or "single",
             "result_index": result_index,
@@ -754,26 +754,20 @@ def _find_tools(
     _setup_django_models()
 
     from apps.core.models import Organization
-    from apps.marvins.discovery import DiscoveryEngine
-    from apps.marvins.labels import LabelSelectorError, parse_label_selector
-    from apps.marvins.selectors import TargetSelector
+    from apps.marvins.discovery import CapabilityDiscoveryError, resolve_capabilities
 
     org = Organization.objects.get(id=organization_id)
     try:
-        selector = (
-            TargetSelector.from_dict({"labels": parse_label_selector(labels)}) if labels else None
+        response = resolve_capabilities(
+            org,
+            query=query,
+            labels=labels,
+            limit=limit,
+            capability_name=capability_name,
+            filters=filters,
         )
-    except LabelSelectorError as exc:
+    except CapabilityDiscoveryError as exc:
         return {"error": str(exc)}
-    engine = DiscoveryEngine()
-    response = engine.find_capabilities(
-        org,
-        query=query,
-        selector=selector,
-        limit=limit,
-        capability_name=capability_name,
-        filters=filters,
-    )
     capabilities = response.get("results", response)
     for capability in capabilities:
         if "online_count" in capability and "online_marvins" not in capability:

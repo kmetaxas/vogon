@@ -317,6 +317,65 @@ class MarvinServicerTests(TransactionTestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["name"], "restart")
 
+    def test_find_tools_returns_list_not_dict(self):
+        from services.temporal_workers.activities import _find_tools
+
+        organization = Organization.objects.create(name="ListShape", slug="listshape")
+        Capability = apps.get_model("marvins", "Capability")
+        cap = Capability.objects.create(
+            organization=organization,
+            name="network.icmp.echo_request",
+            description="Ping a host",
+            enabled=True,
+        )
+        Marvin = apps.get_model("marvins", "Marvin")
+        marvin = Marvin.objects.create(
+            organization=organization,
+            name="server1.us-east.example.com",
+            client_id="agent-list",
+            status="online",
+        )
+        marvin.capabilities.add(cap)
+
+        result = _find_tools(str(organization.id), query="test")
+
+        self.assertIsInstance(result, list)
+
+    def test_find_tools_result_has_online_marvins_key(self):
+        from services.temporal_workers.activities import _find_tools
+
+        organization = Organization.objects.create(name="OnlineKey", slug="onlinekey")
+        Capability = apps.get_model("marvins", "Capability")
+        cap = Capability.objects.create(
+            organization=organization,
+            name="network.icmp.echo_request",
+            description="Ping a host",
+            enabled=True,
+        )
+        Marvin = apps.get_model("marvins", "Marvin")
+        marvin = Marvin.objects.create(
+            organization=organization,
+            name="server1.us-east.example.com",
+            client_id="agent-online-key",
+            status="online",
+        )
+        marvin.capabilities.add(cap)
+
+        result = _find_tools(str(organization.id))
+
+        self.assertEqual(len(result), 1)
+        self.assertIn("online_marvins", result[0])
+
+    def test_find_tools_invalid_label_selector_returns_error_dict(self):
+        from services.temporal_workers.activities import _find_tools
+
+        organization = Organization.objects.create(name="BadSelector", slug="badselector")
+
+        result = _find_tools(str(organization.id), labels="invalid=selector")
+
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+
     def test_capability_result_routes_to_future(self):
         class _CaptureStream(MarvinStream):
             def __init__(self, agent_id: str):

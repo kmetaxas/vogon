@@ -1,7 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false, reportArgumentType=false
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1621,6 +1621,46 @@ class TemporalFanoutActivityTests(TransactionTestCase):
         assert executions[1].error_message == "marvin exploded"
         assert execute_capability_mock.await_count == 2
         release_budget.assert_called_once_with(thread.tsession, 2)
+
+    def test_execute_capability_deadline_is_300_seconds_in_future(self):
+        """Regression: deadline must be computed without datetime.timezone.utc.
+
+        The activity previously used ``datetime.now(datetime.timezone.utc)`` which
+        raised ``TypeError`` during real execution (tests mocked the activity, so
+        the bug was hidden). This exercises the real activity with a mocked gRPC
+        stream and asserts the emitted deadline is ~300s in the future.
+        """
+        from services.temporal_workers import activities
+
+        _user, _organization, session, thread, _capability, marvins, _target_set = (
+            _create_fanout_fixture("deadline")
+        )
+        marvin = marvins[0]
+
+        stream = Mock()
+        stream.send_command = AsyncMock(return_value={"stdout": "ok"})
+        grpc_service = Mock()
+        grpc_service.get_marvin_stream.return_value = stream
+
+        before_ms = int(datetime.now(UTC).timestamp() * 1000)
+        with patch.object(activities, "_grpc_service", grpc_service):
+            result = asyncio.run(
+                activities.execute_capability(
+                    str(session.id),
+                    str(thread.id),
+                    "deadline.check",
+                    {"service": "api"},
+                    str(marvin.id),
+                )
+            )
+        after_ms = int(datetime.now(UTC).timestamp() * 1000)
+
+        assert result == {"stdout": "ok"}
+        grpc_service.get_marvin_stream.assert_called_once_with(marvin.client_id)
+        command = stream.send_command.await_args.args[0]
+        deadline = command["execute_capability"]["deadline_unix_ms"]
+        assert before_ms + 300_000 <= deadline <= after_ms + 300_000
+        assert abs(deadline - (before_ms + 300_000)) < 5_000
 
 
 class AgentErrorTests(TransactionTestCase):
