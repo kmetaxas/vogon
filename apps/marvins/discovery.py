@@ -16,6 +16,7 @@ from django.db.models import Count, Q
 from django.db.transaction import atomic
 from django.utils import timezone
 
+from apps.marvins.labels import LabelSelectorError, parse_label_selector
 from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
 from apps.marvins.policies import ExecutionPolicy
 from apps.marvins.selectors import TargetSelector
@@ -46,6 +47,10 @@ class BudgetExceeded(DiscoveryError):  # noqa: N818
 
 class SelectorRequiresResource(DiscoveryError):  # noqa: N818
     """Raised when resource-scoped resolution cannot identify any resource targets."""
+
+
+class CapabilityDiscoveryError(DiscoveryError):
+    """Raised when capability discovery input (e.g. labels) is invalid."""
 
 
 def _classify_fanout(count: int) -> str:
@@ -589,3 +594,36 @@ class DiscoveryEngine:
                 f"Capability scope {scope!r} requires a resource target."
             )
         return dict(grouped)
+
+
+def resolve_capabilities(
+    organization: Any,
+    query: str | None = None,
+    labels: str | None = None,
+    limit: int = 10,
+    capability_name: str | None = None,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve discoverable capabilities for an organization.
+
+    Synchronous, side-effect-free wrapper around
+    :meth:`DiscoveryEngine.find_capabilities`. When ``labels`` is provided it is
+    parsed with :func:`apps.marvins.labels.parse_label_selector` and converted
+    into a :class:`TargetSelector`.
+    """
+    selector: TargetSelector | None = None
+    if labels:
+        try:
+            parsed_labels = parse_label_selector(labels)
+        except LabelSelectorError as exc:
+            raise CapabilityDiscoveryError(str(exc)) from exc
+        selector = TargetSelector.from_dict({"labels": parsed_labels})
+
+    return DiscoveryEngine().find_capabilities(
+        organization,
+        query=query,
+        selector=selector,
+        limit=limit,
+        capability_name=capability_name,
+        filters=filters,
+    )

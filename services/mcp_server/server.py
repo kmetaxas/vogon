@@ -22,10 +22,12 @@ django.setup()
 
 from apps.core.models import Organization
 from apps.marvins.discovery import (
+    CapabilityDiscoveryError,
     CapabilityNotFound,
     DiscoveryEngine,
     FanOutLimitExceeded,
     SelectorRequiresResource,
+    resolve_capabilities,
 )
 from apps.marvins.labels import LabelSelectorError, parse_label_selector
 from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
@@ -70,12 +72,6 @@ def log_tool_call(func: Callable) -> Callable:
             raise
 
     return wrapper
-
-
-def _selector_from_labels(labels: str | None) -> TargetSelector | None:
-    if not labels:
-        return None
-    return TargetSelector(labels=parse_label_selector(labels))
 
 
 def _unauthorized_error(error: MCPAuthError) -> dict:
@@ -177,15 +173,15 @@ async def find_tools(
         org = validate_mcp_token(api_token, organization_slug)
         from asgiref.sync import sync_to_async
 
-        return await sync_to_async(DiscoveryEngine().find_capabilities)(
+        return await sync_to_async(resolve_capabilities)(
             org,
             query=query,
-            selector=_selector_from_labels(labels),
+            labels=labels,
             limit=limit,
             capability_name=capability_name,
             filters=filters,
         )
-    except LabelSelectorError as e:
+    except CapabilityDiscoveryError as e:
         return {"success": False, "error": str(e), "code": "invalid_label_selector"}
     except MCPAuthError as e:
         return _unauthorized_error(e)
@@ -274,7 +270,7 @@ async def execute(
                 target_set = DiscoveryEngine().resolve_targets(
                     org,
                     capability,
-                    _selector_from_labels(labels),
+                    TargetSelector(labels=parse_label_selector(labels)) if labels else None,
                 )
             except SelectorRequiresResource as e:
                 return {"success": False, "error": str(e), "code": "selector_requires_resource"}
@@ -386,11 +382,6 @@ async def execute_tool(
     session_id: str = None,
     thread_id: str = None,
 ) -> dict:
-    try:
-        validate_mcp_token(api_token, organization_slug)
-    except MCPAuthError as e:
-        return _unauthorized_error(e)
-
     return await execute(
         api_token=api_token,
         organization_slug=organization_slug,
@@ -772,7 +763,3 @@ async def get_infrastructure_design(
             return {"success": False, "error": "Design not found"}
         logger.error("Error getting infrastructure design: %s", e)
         return {"success": False, "error": str(e)}
-
-
-if __name__ == "__main__":
-    mcp.run()
