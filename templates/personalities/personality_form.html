@@ -3,6 +3,7 @@
 {% block title %}{% if is_create %}New Personality{% else %}Edit {{ personality.name }}{% endif %} - Vogon{% endblock %}
 
 {% block extra_css %}
+{{ block.super }}
 <style>
 .personality-form-wrapper {
   padding: 0;

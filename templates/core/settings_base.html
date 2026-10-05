@@ -2,7 +2,7 @@
 
 {% block title %}Settings - Vogon{% endblock %}
 
-{% block extra_css %}
+{% block content %}
 <style>
 .settings-layout {
     display: grid;
@@ -77,16 +77,14 @@
     min-height: 400px;
 }
 </style>
-{% endblock %}
 
-{% block content %}
 <div class="settings-layout">
     <aside class="settings-sidebar">
         <h3>Settings</h3>
         <nav>
             <a href="{% url 'personalities:personality-list' %}?layout=settings" {% if active_tab == 'personalities' %}class="active"{% endif %}>Personalities</a>
             <a href="#" onclick="return false;">Account</a>
-            <a href="{% url 'core:org-detail' %}">Organization</a>
+            <a href="{% url 'core:org-detail' %}" {% if active_tab == 'organization' %}class="active"{% endif %}>Organization</a>
         </nav>
     </aside>
     <div class="settings-main" id="settings-main">
