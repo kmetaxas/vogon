@@ -1,7 +1,8 @@
-# pyright: reportAttributeAccessIssue=false
+# pyright: reportAttributeAccessIssue=false, reportCallIssue=false
 
 import json
 
+from django.db.models import Q
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -13,6 +14,13 @@ from apps.checks.models import (
     CheckVersion,
 )
 from apps.core.mixins import OrganizationRequiredMixin
+from apps.personalities.models import Personality
+
+
+def _personality_queryset(organization):
+    return Personality.objects.filter(
+        Q(organization=organization) | Q(scope=Personality.Scope.SYSTEM, organization__isnull=True)
+    ).order_by("name")
 
 
 class CheckListView(OrganizationRequiredMixin, View):
@@ -40,6 +48,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
         context = {
             "organization": self.organization,
             "schedule_types": Check.ScheduleType.choices,
+            "personalities": _personality_queryset(self.organization),
         }
         return render(request, "checks/check_form.html", context)
 
@@ -65,6 +74,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 {
                     "organization": self.organization,
                     "schedule_types": Check.ScheduleType.choices,
+                    "personalities": _personality_queryset(self.organization),
                     "check": check,
                     "error": "Invalid JSON in config fields.",
                     "notification_config_raw": notification_config_raw,
@@ -80,6 +90,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             schedule_expression=request.POST.get("schedule_expression", "60"),
             timezone=request.POST.get("timezone", "UTC"),
             notification_config=notification_config,
+            personality_id=request.POST.get("personality") or None,
             created_by=request.user,
         )
         try:
@@ -100,6 +111,7 @@ class CheckEditView(OrganizationRequiredMixin, View):
         context = {
             "check": check,
             "schedule_types": Check.ScheduleType.choices,
+            "personalities": _personality_queryset(self.organization),
         }
         return render(request, "checks/check_form.html", context)
 
@@ -113,6 +125,7 @@ class CheckEditView(OrganizationRequiredMixin, View):
             "schedule_expression", check.schedule_expression
         )
         check.timezone = request.POST.get("timezone", check.timezone)
+        check.personality_id = request.POST.get("personality") or None
 
         notification_config_raw = request.POST.get("notification_config", "{}").strip()
 
@@ -127,6 +140,7 @@ class CheckEditView(OrganizationRequiredMixin, View):
                 {
                     "check": check,
                     "schedule_types": Check.ScheduleType.choices,
+                    "personalities": _personality_queryset(self.organization),
                     "error": "Invalid JSON in config fields.",
                     "notification_config_raw": notification_config_raw,
                 },

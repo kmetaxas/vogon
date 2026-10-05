@@ -643,6 +643,9 @@ class AutonomousInvestigationWorkflow:
                 "- findings: list of {severity, message, path, expected, actual}\n"
                 "- summary: brief text summary"
             )
+            personality_prompt = context.get("personality_prompt")
+            if personality_prompt:
+                system_prompt += "\n\n" + personality_prompt
 
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},

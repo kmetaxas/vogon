@@ -1,0 +1,88 @@
+{% extends 'core/settings_base.html' %}
+{% load static %}
+{% block title %}{% if is_create %}New Personality{% else %}Edit {{ personality.name }}{% endif %} - Vogon{% endblock %}
+
+{% block extra_css %}
+{{ block.super }}
+<style>
+.personality-form-wrapper {
+  padding: 0;
+  max-width: 720px;
+}
+.personality-form-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+.personality-form-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+.personality-form-error {
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+.personality-form-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+</style>
+{% endblock %}
+
+{% block settings_content %}
+<div class="personality-form-wrapper">
+  <div class="personality-form-header">
+    <h1 class="personality-form-title">{% if is_create %}New Personality{% else %}Edit {{ personality.name }}{% endif %}</h1>
+    <a href="{% url 'personalities:personality-list' %}" class="btn btn-secondary">&larr; Back to Personalities</a>
+  </div>
+
+  {% if error %}
+  <div class="personality-form-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post"
+        action="{% if is_create %}{% url 'personalities:personality-create' %}{% else %}{% url 'personalities:personality-edit' personality.id %}{% endif %}"
+        class="personality-form">
+    {% csrf_token %}
+
+    <div class="form-group">
+      <label class="form-label">Name <span class="required">*</span></label>
+      <input type="text" name="name" class="form-control" value="{{ personality.name|default:'' }}" placeholder="e.g. Friendly SRE" required>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Category</label>
+      <input type="text" name="category" class="form-control" value="{{ personality.category|default:'' }}" placeholder="e.g. sre, security">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea name="description" class="form-control" rows="3" placeholder="Short summary of this personality's style and purpose...">{{ personality.description|default:'' }}</textarea>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Prompt Text <span class="required">*</span></label>
+      <textarea name="prompt_text" class="form-control" rows="12" placeholder="Enter the system prompt that defines this personality..." required>{{ personality.prompt_text|default:'' }}</textarea>
+      <div class="form-help">This text is injected as the system prompt during troubleshooting sessions.</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Tags</label>
+      <input type="text" name="tags" class="form-control" value="{% if personality.tags %}{{ personality.tags|join:", " }}{% endif %}" placeholder="comma, separated, tags">
+      <div class="form-help">Comma-separated list of tags for filtering and search.</div>
+    </div>
+
+    <div class="personality-form-actions">
+      <button type="submit" class="btn btn-primary btn-lg">{% if is_create %}Create Personality{% else %}Save Changes{% endif %}</button>
+      <a href="{% url 'personalities:personality-list' %}" class="btn btn-secondary btn-lg">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

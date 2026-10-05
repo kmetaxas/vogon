@@ -3,13 +3,22 @@
 import logging
 
 from django.core.exceptions import ValidationError
-from django.http.response import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
+from django.db import transaction
+from django.db.models import Q
+from django.http import JsonResponse
+from django.http.response import (
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseForbidden,
+    HttpResponseRedirect,
+)
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
 from apps.core.mixins import OrganizationRequiredMixin
 from apps.llm.models import LLMProvider
+from apps.personalities.models import Personality
 from apps.sessions.models import (
     AgentEvent,
     ArchitectureRequest,
@@ -38,6 +47,27 @@ def _resolved_provider(session):
         .order_by("-is_default")
         .first()
     )
+
+
+def _set_session_personality(session, personality_id, organization):
+    """Atomically set a session's personality if not already set.
+
+    Returns the Personality instance if set, None if already set,
+    or raises Http404 on validation errors.
+    """
+    with transaction.atomic():
+        session = TSession.objects.select_for_update().get(id=session.id)
+        if session.personality_id is not None:
+            return None  # Already set, silently ignore
+
+        personality = get_object_or_404(
+            Personality,
+            Q(id=personality_id, organization=organization)
+            | Q(id=personality_id, scope=Personality.Scope.SYSTEM, organization__isnull=True),
+        )
+        session.personality = personality
+        session.save(update_fields=["personality"])
+        return personality
 
 
 def _thread_ui_context(session, user):
@@ -491,6 +521,11 @@ class ThreadSendMessageView(OrganizationRequiredMixin, View):
             except (LLMProvider.DoesNotExist, ValidationError):
                 pass
 
+        # Handle optional personality selection (set-once)
+        personality_id = request.POST.get("personality_id")
+        if personality_id:
+            _set_session_personality(session, personality_id, self.organization)
+
         if content:
             # Extract design references like [design:<uuid>]
             import re
@@ -728,3 +763,19 @@ class ArchitectureRequestUploadView(OrganizationRequiredMixin, View):
         return HttpResponseRedirect(
             reverse("sessions:session-detail", kwargs={"session_id": session.id})
         )
+
+
+class SessionSetPersonalityView(OrganizationRequiredMixin, View):
+    def post(self, request, session_id):
+        session = get_object_or_404(TSession, id=session_id, organization=self.organization)
+        personality_id = request.POST.get("personality_id")
+        if not personality_id:
+            return HttpResponseBadRequest("personality_id required")
+
+        result = _set_session_personality(session, personality_id, self.organization)
+        if result is None:
+            return JsonResponse({"error": "Personality already set"}, status=409)
+
+        if request.headers.get("HX-Request"):
+            return HttpResponse("", status=204)
+        return JsonResponse({"status": "ok", "personality_name": result.name})

@@ -1,8 +1,16 @@
-{% extends 'base.html' %}
+{% extends 'core/settings_base.html' %}
 
 {% block title %}Settings - Vogon{% endblock %}
 
-{% block content %}
+{% block settings_content %}
 <h1>Settings</h1>
-<p>Your account settings.</p>
+<p>Manage your account and organization settings.</p>
+<div class="card">
+    <h2 class="card-title">Quick Links</h2>
+    <ul>
+        <li><a href="{% url 'personalities:personality-list' %}?layout=settings">Manage Personalities</a></li>
+        <li><a href="{% url 'core:profile' %}">View Profile</a></li>
+        <li><a href="{% url 'core:org-detail' %}">Organization Settings</a></li>
+    </ul>
+</div>
 {% endblock %}

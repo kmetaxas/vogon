@@ -216,6 +216,7 @@ class OrganizationDetailView(OrganizationRequiredMixin, View):
             "invitations": invitations,
             "is_admin": membership.is_admin(),
             "is_owner": membership.role == OrganizationMembership.Role.OWNER,
+            "active_tab": "organization",
         }
         return render(request, "core/org_detail.html", context)
 

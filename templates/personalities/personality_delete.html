@@ -1,0 +1,47 @@
+{% extends 'core/settings_base.html' %}
+{% load static %}
+{% block title %}Delete {{ personality.name }} - Vogon{% endblock %}
+
+{% block extra_css %}
+{{ block.super }}
+<style>
+.personality-delete-wrapper {
+  padding: 0;
+  max-width: 560px;
+}
+.personality-delete-header {
+  margin-bottom: 1.5rem;
+}
+.personality-delete-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+.personality-delete-desc {
+  color: var(--color-muted);
+  margin-top: 0.5rem;
+}
+.personality-delete-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+</style>
+{% endblock %}
+
+{% block settings_content %}
+<div class="personality-delete-wrapper">
+  <div class="personality-delete-header">
+    <h1 class="personality-delete-title">Delete Personality</h1>
+    <p class="personality-delete-desc">Are you sure you want to delete <strong>{{ personality.name }}</strong>? This action cannot be undone.</p>
+  </div>
+
+  <form method="post" action="{% url 'personalities:personality-delete' personality.id %}">
+    {% csrf_token %}
+    <div class="personality-delete-actions">
+      <button type="submit" class="btn btn-danger btn-lg">Delete</button>
+      <a href="{% url 'personalities:personality-detail' personality.id %}" class="btn btn-secondary btn-lg">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

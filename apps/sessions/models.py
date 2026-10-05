@@ -60,6 +60,13 @@ class TSession(models.Model):
         related_name="tsessions",
         help_text="Optional LLM provider override for this session. Falls back to org default.",
     )
+    personality = models.ForeignKey(
+        "personalities.Personality",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tsessions",
+    )
     is_autonomous = models.BooleanField(
         default=False,
         help_text="Autonomous sessions are hidden from default session views.",

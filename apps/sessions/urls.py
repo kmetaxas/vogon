@@ -21,6 +21,11 @@ urlpatterns = [
         views.ArchitectureRequestUploadView.as_view(),
         name="architecture-upload",
     ),
+    path(
+        "<uuid:session_id>/set-personality/",
+        views.SessionSetPersonalityView.as_view(),
+        name="session-set-personality",
+    ),
     # Thread-scoped routes
     path(
         "<uuid:session_id>/threads/",
