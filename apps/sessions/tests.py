@@ -25,6 +25,8 @@ from apps.sessions.models import (
 )
 from services.llm.base import LLMResponse
 from services.temporal_workers.activities import (
+    SYSTEM_PROMPT,
+    _build_llm_context,
     _create_executions,
     _route_and_execute,
     build_llm_context,
@@ -4095,6 +4097,128 @@ class TroubleshootWorkflowBudgetTests(TestCase):
 
         self.assertEqual(state["last_failure_reason"], "budget_exceeded")
         self.assertEqual(state["last_failure_detail"], "Context token budget exceeded.")
+
+
+class PersonalityIntegrationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="pers_user", password="pass")
+        self.organization = Organization.objects.create(name="Pers Org", slug="pers-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    @patch("apps.sessions.views.send_message_to_workflow_sync")
+    def test_session_set_personality_via_message(self, send_message):
+        """Sending a message with personality_id sets the session's personality."""
+        from apps.personalities.models import Personality
+
+        personality = Personality.objects.create(
+            organization=self.organization,
+            name="DBA Expert",
+            prompt_text="You are a DBA expert.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Personality Session",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+
+        self.client.post(
+            reverse(
+                "sessions:thread-send-message",
+                kwargs={"session_id": session.id, "thread_id": thread.id},
+            ),
+            {"content": "Check DB", "personality_id": str(personality.id)},
+        )
+
+        session.refresh_from_db()
+        self.assertEqual(session.personality, personality)
+        send_message.assert_called_once()
+
+    @patch("apps.sessions.views.send_message_to_workflow_sync")
+    def test_session_personality_set_once(self, send_message):
+        """Setting personality a second time is silently ignored."""
+        from apps.personalities.models import Personality
+
+        first_personality = Personality.objects.create(
+            organization=self.organization,
+            name="DBA Expert",
+            prompt_text="You are a DBA expert.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        second_personality = Personality.objects.create(
+            organization=self.organization,
+            name="Security Expert",
+            prompt_text="You are a security expert.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Set Once Session",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+            personality=first_personality,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+
+        self.client.post(
+            reverse(
+                "sessions:thread-send-message",
+                kwargs={"session_id": session.id, "thread_id": thread.id},
+            ),
+            {"content": "Check DB", "personality_id": str(second_personality.id)},
+        )
+
+        session.refresh_from_db()
+        self.assertEqual(session.personality, first_personality)
+
+    def test_build_llm_context_with_personality(self):
+        """_build_llm_context includes personality prompt_text when session has one."""
+        from apps.personalities.models import Personality
+
+        personality = Personality.objects.create(
+            organization=self.organization,
+            name="SRE Expert",
+            prompt_text="Be extremely concise.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Context Session",
+            created_by=self.user,
+            personality=personality,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+        Message.objects.create(thread=thread, role=Message.Role.USER, content="Hello")
+
+        result = _build_llm_context(str(thread.id), {"content": "Test", "role": Message.Role.USER})
+        messages = result["messages"]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn(SYSTEM_PROMPT, messages[0]["content"])
+        self.assertIn("Be extremely concise.", messages[0]["content"])
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertEqual(messages[1]["content"], "Hello")
+
+    def test_build_llm_context_without_personality(self):
+        """_build_llm_context returns just SYSTEM_PROMPT when no personality."""
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="No Personality Session",
+            created_by=self.user,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+        Message.objects.create(thread=thread, role=Message.Role.USER, content="Hello")
+
+        result = _build_llm_context(str(thread.id), {"content": "Test", "role": Message.Role.USER})
+        messages = result["messages"]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual(messages[0]["content"], SYSTEM_PROMPT)
 
 
 class MessageModelNameBackfillTests(TestCase):

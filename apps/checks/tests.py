@@ -970,6 +970,29 @@ class CheckUIViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertTrue(Check.objects.filter(name="Created Via UI").exists())
 
+    def test_check_form_with_personality(self):
+        """Check create form accepts personality_id and persists it."""
+        from apps.personalities.models import Personality
+
+        personality = Personality.objects.create(
+            organization=self.organization,
+            name="SRE Bot",
+            prompt_text="Be concise.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        response = self.client.post(
+            "/checks/new/",
+            {
+                "name": "Personality Check",
+                "schedule_type": Check.ScheduleType.INTERVAL,
+                "schedule_expression": "300",
+                "personality": str(personality.id),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        check = Check.objects.get(name="Personality Check")
+        self.assertEqual(check.personality, personality)
+
     def test_check_edit_view(self):
         check = _make_check(self.organization, name="Edit Me")
         response = self.client.post(
@@ -1576,6 +1599,33 @@ class CheckBudgetMigrationTests(TransactionTestCase):
         self.assertEqual(result["execution_budget"]["max_executions_per_session"], 3)
         self.assertEqual(result["execution_budget"]["executions_used"], 0)
         self.assertNotIn("max_iterations", result["execution_budget"])
+
+    def test_check_workflow_system_prompt_with_personality(self):
+        """Check workflow context includes personality_prompt when Check has one."""
+        from apps.personalities.models import Personality
+        from services.temporal_workers.activities import load_check_context
+
+        personality = Personality.objects.create(
+            organization=self.organization,
+            name="Check SRE",
+            prompt_text="Focus on latency metrics.",
+            scope=Personality.Scope.ORGANIZATION,
+        )
+        check = _make_check(self.organization, name="Personality Context Check")
+        check.personality = personality
+        check.save(update_fields=["personality"])
+
+        result = asyncio.run(load_check_context(str(check.id), ""))
+        self.assertEqual(result["personality_prompt"], "Focus on latency metrics.")
+
+    def test_check_workflow_system_prompt_without_personality(self):
+        """Check workflow context returns None personality_prompt when no personality."""
+        from services.temporal_workers.activities import load_check_context
+
+        check = _make_check(self.organization, name="No Personality Context Check")
+
+        result = asyncio.run(load_check_context(str(check.id), ""))
+        self.assertIsNone(result["personality_prompt"])
 
 
 class CheckExecutionTemplateTests(TestCase):

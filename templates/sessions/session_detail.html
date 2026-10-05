@@ -237,6 +237,69 @@
         });
     })();
 
+    // --- Personality picker (event delegation for HTMX-swapped content) ---
+    (function() {
+        var picker = null;
+        document.body.addEventListener('click', function(e) {
+            var btn = e.target.closest('#personality-ref-btn');
+            if (btn) {
+                e.stopPropagation();
+                e.preventDefault();
+                if (picker) { picker.remove(); picker = null; return; }
+                picker = document.createElement('div');
+                picker.id = 'personality-picker';
+                picker.className = 'personality-picker-dropdown';
+                picker.innerHTML = '<div style="padding:var(--spacing-md);text-align:center;color:var(--color-text-secondary);font-size:0.875rem;">Loading personalities...</div>';
+                document.body.appendChild(picker);
+                var rect = btn.getBoundingClientRect();
+                picker.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+                picker.style.left = (rect.left + window.scrollX) + 'px';
+                fetch('/personalities/?format=picker', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                    .then(function(r) { return r.text(); })
+                    .then(function(html) {
+                        picker.innerHTML = html;
+                        if (window.htmx) htmx.process(picker);
+                    })
+                    .catch(function() {
+                        picker.innerHTML = '<div style="padding:var(--spacing-md);text-align:center;color:var(--color-danger);font-size:0.875rem;">Failed to load personalities.</div>';
+                    });
+                return;
+            }
+
+            // Close picker on outside click
+            if (picker && !e.target.closest('.personality-picker-dropdown') && !e.target.closest('#personality-ref-btn')) {
+                picker.remove(); picker = null;
+                return;
+            }
+
+            // Handle picker item click
+            var item = e.target.closest('.personality-picker-item');
+            if (item) {
+                var personalityId = item.dataset.personalityId;
+                var formData = new FormData();
+                formData.append('personality_id', personalityId);
+                var csrfToken = document.querySelector('meta[name="csrf-token"]');
+                if (csrfToken) formData.append('csrfmiddlewaretoken', csrfToken.content);
+                fetch('/sessions/' + '{{ session.id }}' + '/set-personality/', {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                })
+                .then(function(r) {
+                    if (r.ok) {
+                        window.location.reload();
+                    } else {
+                        alert('Failed to set personality.');
+                    }
+                })
+                .catch(function() {
+                    alert('Failed to set personality.');
+                });
+                if (picker) { picker.remove(); picker = null; }
+            }
+        });
+    })();
+
     document.body.addEventListener('htmx:afterRequest', function(evt) {
         if (evt.detail.elt.id === 'chat-form') {
             var input = document.getElementById('chat-input');

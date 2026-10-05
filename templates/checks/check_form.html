@@ -48,6 +48,16 @@
                 <div class="form-help">Timezone for cron schedules (e.g. UTC, America/New_York)</div>
             </div>
             <div class="form-group">
+                <label class="form-label">Personality</label>
+                <select name="personality" class="form-control">
+                    <option value="">None</option>
+                    {% for personality in personalities %}
+                    <option value="{{ personality.id }}" {% if check and check.personality_id == personality.id %}selected{% endif %}>{{ personality.name }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-help">Optional AI personality to use when evaluating this check.</div>
+            </div>
+            <div class="form-group">
                 <label class="form-label">Notification Config (JSON)</label>
                 <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
                 <div class="form-help">JSON object with notification channels and conditions.</div>

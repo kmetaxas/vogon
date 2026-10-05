@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "apps.marvins",
     "apps.sessions",
     "apps.infradesigns",
+    "apps.personalities",
     "apps.checks",
     "apps.ws",
     "channels_postgres",

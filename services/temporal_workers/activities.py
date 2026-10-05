@@ -146,7 +146,7 @@ def _initialize_session(session_id: str, thread_id: str) -> dict:
     from apps.sessions.models import Thread, TSession
 
     session = TSession.objects.get(id=session_id)
-    thread = Thread.objects.get(id=thread_id)
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
 
     session.status = TSession.Status.ACTIVE
     session.save()
@@ -201,7 +201,7 @@ def _gather_thread_context(thread_id: str) -> dict:
 
     from apps.sessions.models import Thread, ToolCall
 
-    thread = Thread.objects.get(id=thread_id)
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
     session = thread.tsession
 
     # Get tool calls from other visible threads
@@ -251,7 +251,7 @@ def _create_assistant_message(
     if not content.strip():
         return {"message_id": None, "thread_id": thread_id, "skipped": True}
 
-    thread = Thread.objects.get(id=thread_id)
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
     message = Message.objects.create(
         thread=thread,
         role=Message.Role.ASSISTANT,
@@ -333,7 +333,7 @@ def _get_user_messages(thread_id: str, since: str | None = None) -> list[dict[st
 
     from apps.sessions.models import Message, Thread
 
-    thread = Thread.objects.get(id=thread_id)
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
     messages = thread.messages.filter(role=Message.Role.USER).order_by("created_at")
 
     if since:
@@ -375,8 +375,11 @@ def _build_llm_context(thread_id: str, user_message: dict) -> dict:
 
     from apps.sessions.models import Message, Thread
 
-    thread = Thread.objects.get(id=thread_id)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
+    system_prompt = SYSTEM_PROMPT
+    if thread.tsession.personality:
+        system_prompt += "\n\n" + thread.tsession.personality.prompt_text
+    messages = [{"role": "system", "content": system_prompt}]
 
     for message in thread.messages.order_by("created_at"):
         if message.role == Message.Role.TOOL:
@@ -454,7 +457,9 @@ async def call_llm(
     thread = None
     if thread_id:
         thread = await sync_to_async(
-            Thread.objects.select_related("tsession__organization", "tsession__llm_provider").get
+            Thread.objects.select_related(
+                "tsession__organization", "tsession__llm_provider", "tsession__personality"
+            ).get
         )(id=thread_id)
 
         # Budget pre-check: if limits are set and already exceeded, block the call.
@@ -651,9 +656,9 @@ async def execute_llm_tool(
     org = None
     thread = None
     if thread_id:
-        thread = await sync_to_async(Thread.objects.select_related("tsession__organization").get)(
-            id=thread_id
-        )
+        thread = await sync_to_async(
+            Thread.objects.select_related("tsession__organization", "tsession__personality").get
+        )(id=thread_id)
         org = thread.tsession.organization
     elif organization_id:
         org = await sync_to_async(Organization.objects.get)(id=organization_id)
@@ -1032,7 +1037,7 @@ def _record_agent_event(thread_id: str, kind: str, detail: dict) -> dict:
 
     from apps.sessions.models import AgentEvent, Thread
 
-    thread = Thread.objects.get(id=thread_id)
+    thread = Thread.objects.select_related("tsession__personality").get(id=thread_id)
 
     label = detail.get("label", "")
     if not label:
@@ -1063,7 +1068,7 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
     try:
         check = await sync_to_async(
             Check.objects.select_related(
-                "organization", "llm_provider", "target_scope", "created_by"
+                "organization", "llm_provider", "target_scope", "personality", "created_by"
             ).get
         )(id=check_id)
     except Check.DoesNotExist:
@@ -1086,6 +1091,7 @@ async def load_check_context(check_id: str, version_id: str) -> dict:
         "execution_budget": normalize_execution_budget(check.execution_budget),
         "llm_provider_id": str(check.llm_provider_id) if check.llm_provider_id else None,
         "target_scope_id": str(check.target_scope_id) if check.target_scope_id else None,
+        "personality_prompt": check.personality.prompt_text if check.personality else None,
         "investigation_goal": "Investigate and report findings",
     }
 

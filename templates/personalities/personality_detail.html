@@ -1,0 +1,105 @@
+{% extends 'core/settings_base.html' %}
+{% load static %}
+{% block title %}{{ personality.name }} - Personality - Vogon{% endblock %}
+
+{% block extra_css %}
+<style>
+.personality-detail-wrapper {
+  padding: 0;
+  max-width: 800px;
+}
+.personality-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+}
+.personality-detail-title {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin: 0;
+}
+.personality-detail-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.personality-detail-section {
+  margin-bottom: 1.5rem;
+}
+.personality-detail-section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  color: var(--color-muted);
+  margin-bottom: 0.5rem;
+}
+.personality-detail-desc {
+  line-height: 1.6;
+  color: var(--color-text);
+}
+.personality-detail-prompt {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.badge-organization {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.badge-system {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.personality-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  margin-bottom: 1.5rem;
+}
+</style>
+{% endblock %}
+
+{% block settings_content %}
+<div class="personality-detail-wrapper">
+  <div class="personality-detail-header">
+    <div>
+      <h1 class="personality-detail-title">{{ personality.name }}</h1>
+      <span class="badge badge-{{ personality.scope }}">{{ personality.get_scope_display }}</span>
+    </div>
+    {% if personality.scope == personality.Scope.ORGANIZATION %}
+    <div class="personality-detail-actions">
+      <a href="{% url 'personalities:personality-edit' personality.id %}" class="btn btn-secondary">Edit</a>
+      <a href="{% url 'personalities:personality-delete' personality.id %}" class="btn btn-danger">Delete</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="personality-meta-row">
+    {% if personality.category %}<span>Category: {{ personality.category }}</span>{% endif %}
+    {% if personality.tags %}<span>Tags: {{ personality.tags|join:", " }}</span>{% endif %}
+    <span>Updated {{ personality.updated_at|timesince }} ago</span>
+  </div>
+
+  {% if personality.description %}
+  <div class="personality-detail-section">
+    <div class="personality-detail-section-title">Description</div>
+    <div class="personality-detail-desc">{{ personality.description }}</div>
+  </div>
+  {% endif %}
+
+  <div class="personality-detail-section">
+    <div class="personality-detail-section-title">Prompt Text</div>
+    <div class="personality-detail-prompt">{{ personality.prompt_text }}</div>
+  </div>
+</div>
+{% endblock %}

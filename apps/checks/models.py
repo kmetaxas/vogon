@@ -82,6 +82,13 @@ class Check(models.Model):
         blank=True,
         related_name="checks",
     )
+    personality = models.ForeignKey(
+        "personalities.Personality",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checks",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

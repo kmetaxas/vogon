@@ -79,6 +79,13 @@
     <div class="composer-toolbar" style="display: flex; align-items: center; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
       <button type="button" class="btn btn-sm btn-secondary" id="design-ref-btn"
               title="Reference an infrastructure design">&#128208; Design</button>
+      {% if session.status != "completed" and session.status != "paused" %}
+      {% if session.personality %}
+      <span class="badge badge-info" title="{{ session.personality.name }}">{{ session.personality.name }}</span>
+      {% else %}
+      <button type="button" class="btn btn-sm btn-secondary" id="personality-ref-btn" title="Select a personality">Personality</button>
+      {% endif %}
+      {% endif %}
       <div class="model-selector" style="display: flex; align-items: center; gap: var(--spacing-xs);">
         <label for="llm-provider-select" style="font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap;">Model:</label>
         <select id="llm-provider-select" name="llm_provider" form="chat-form" class="form-control" style="font-size: 0.75rem; padding: var(--spacing-xs); min-width: 120px;">

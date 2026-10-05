@@ -17,6 +17,7 @@ from apps.marvins.api_views import (
     ResourceTypeViewSet,
     ResourceViewSet,
 )
+from apps.personalities.api_views import PersonalityViewSet
 from apps.sessions.api_views import (
     AgentEventViewSet,
     ArchitectureRequestViewSet,
@@ -45,6 +46,7 @@ router.register(r"resource-types", ResourceTypeViewSet, basename="resourcetype")
 router.register(r"resources", ResourceViewSet, basename="resource")
 router.register(r"marvin-configs", MarvinConfigViewSet, basename="marvinconfig")
 router.register(r"llm-providers", LLMProviderViewSet, basename="llmprovider")
+router.register(r"personalities", PersonalityViewSet, basename="personality")
 router.register(r"checks", CheckViewSet, basename="check")
 router.register(r"check-versions", CheckVersionViewSet, basename="checkversion")
 router.register(r"check-executions", CheckExecutionViewSet, basename="checkexecution")

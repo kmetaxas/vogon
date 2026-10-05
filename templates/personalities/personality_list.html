@@ -1,0 +1,116 @@
+{% extends 'core/settings_base.html' %}
+
+{% block title %}Personalities - Vogon{% endblock %}
+
+{% block extra_css %}
+<style>
+.personality-list-wrapper {
+  padding: 0;
+}
+.personality-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+.personality-list-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+.personality-list-subtitle {
+  color: var(--color-muted);
+  margin: 0.25rem 0 0 0;
+  font-size: 0.875rem;
+}
+.personality-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.personality-card {
+  display: block;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  text-decoration: none;
+  color: inherit;
+  transition: box-shadow 0.15s;
+}
+.personality-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+.personality-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+}
+.personality-card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+.personality-card-desc {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  line-height: 1.4;
+  margin-bottom: 0.75rem;
+}
+.personality-card-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+.badge-organization {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.badge-system {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--color-muted);
+}
+</style>
+{% endblock %}
+
+{% block settings_content %}
+<div class="personality-list-wrapper">
+  <div class="personality-list-header">
+    <div>
+      <h1 class="personality-list-title">Personalities</h1>
+      <p class="personality-list-subtitle">Reusable AI personalities for troubleshooting sessions</p>
+    </div>
+    <a href="{% url 'personalities:personality-create' %}" class="btn btn-primary">+ New Personality</a>
+  </div>
+
+  {% if personalities %}
+  <div class="personality-list-grid">
+    {% for personality in personalities %}
+    <a href="{% url 'personalities:personality-detail' personality.id %}" class="personality-card">
+      <div class="personality-card-header">
+        <h3 class="personality-card-title">{{ personality.name }}</h3>
+        <span class="badge badge-{{ personality.scope }}">{{ personality.get_scope_display }}</span>
+      </div>
+      <div class="personality-card-desc">{{ personality.description|default:"No description provided."|truncatewords:25 }}</div>
+      <div class="personality-card-meta">
+        <span>{% if personality.category %}{{ personality.category }}{% else %}Uncategorized{% endif %}</span>
+        <span>{% if personality.tags %}{{ personality.tags|length }} tag{{ personality.tags|length|pluralize }}{% else %}No tags{% endif %}</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>No personalities yet.</p>
+    <a href="{% url 'personalities:personality-create' %}" class="btn btn-primary">Create your first personality</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

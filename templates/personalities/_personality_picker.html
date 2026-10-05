@@ -1,0 +1,15 @@
+{% if personalities %}
+<div class="personality-picker">
+    {% for p in personalities %}
+    <div class="personality-picker-item" data-personality-id="{{ p.id }}" data-personality-name="{{ p.name }}"
+         style="padding:6px 8px;cursor:pointer;border-radius:4px;{% if p.scope == 'system' %}background:#f8f9fa;{% endif %}"
+         onmouseover="this.style.background='#e9ecef'" onmouseout="this.style.background='{% if p.scope == 'system' %}#f8f9fa{% else %}transparent{% endif %}'">
+        <strong>{{ p.name }}</strong>
+        {% if p.category %}<span class="text-muted" style="font-size:0.8em;">({{ p.category }})</span>{% endif %}
+        {% if p.scope == 'system' %}<span class="badge badge-secondary" style="font-size:0.7em;">System</span>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-muted">No personalities available.</p>
+{% endif %}

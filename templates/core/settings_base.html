@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+
+{% block title %}Settings - Vogon{% endblock %}
+
+{% block extra_css %}
+<style>
+.settings-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: var(--spacing-xl);
+    max-width: var(--max-width);
+    margin: var(--spacing-xl) auto;
+    padding: 0 var(--spacing-lg);
+}
+
+@media (max-width: 768px) {
+    .settings-layout {
+        grid-template-columns: 1fr;
+        gap: var(--spacing-lg);
+    }
+}
+
+.settings-sidebar {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--spacing-md);
+    height: fit-content;
+    position: sticky;
+    top: 80px;
+}
+
+.settings-sidebar h3 {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-secondary);
+    margin: 0 0 var(--spacing-sm) 0;
+    padding-bottom: var(--spacing-sm);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.settings-sidebar nav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    background: transparent;
+    border: none;
+    padding: 0;
+    position: static;
+    z-index: auto;
+}
+
+.settings-sidebar nav a {
+    display: block;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-radius: var(--radius);
+    color: var(--color-text);
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s;
+}
+
+.settings-sidebar nav a:hover {
+    background: var(--color-bg);
+    color: var(--color-primary);
+}
+
+.settings-sidebar nav a.active {
+    background: var(--color-primary);
+    color: white;
+}
+
+.settings-main {
+    min-height: 400px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="settings-layout">
+    <aside class="settings-sidebar">
+        <h3>Settings</h3>
+        <nav>
+            <a href="{% url 'personalities:personality-list' %}?layout=settings" {% if active_tab == 'personalities' %}class="active"{% endif %}>Personalities</a>
+            <a href="#" onclick="return false;">Account</a>
+            <a href="{% url 'core:org-detail' %}">Organization</a>
+        </nav>
+    </aside>
+    <div class="settings-main" id="settings-main">
+        {% block settings_content %}{% endblock %}
+    </div>
+</div>
+{% endblock %}
