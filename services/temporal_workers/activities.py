@@ -665,7 +665,32 @@ async def execute_llm_tool(
     else:
         return {"error": "No thread_id or organization_id provided for execute_llm_tool"}
 
-    if name == "find_tools":
+    if name == "raise_notification":
+        severity = args.get("severity", "info")
+        attention = args.get("attention", "normal")
+        if severity not in ("info", "warning", "critical"):
+            return {"status": "error", "error": f"Invalid severity: {severity}"}
+        if attention not in ("normal", "immediate"):
+            return {"status": "error", "error": f"Invalid attention: {attention}"}
+
+        from services.notifications.service import NotificationService
+
+        notification = await sync_to_async(NotificationService.create_notification)(
+            organization=org,
+            severity=severity,
+            attention=attention,
+            title=args.get("title", ""),
+            summary=args.get("summary", ""),
+            details=args.get("details", ""),
+            source_type=args.get("source_type", "llm"),
+            source_id=args.get("source_id", ""),
+            context=args.get("context", {}),
+        )
+
+        if notification:
+            return {"status": "success", "notification_id": str(notification.id)}
+        return {"status": "dropped", "reason": "no policy"}
+    elif name == "find_tools":
         return await sync_to_async(_find_tools)(
             org.id,
             query=args.get("query"),
@@ -1322,3 +1347,83 @@ async def dispatch_actions(
     ]
 
     return {"dispatched": actions_dispatched, "dry_run": False}
+
+
+@activity.defn
+async def get_pending_deliveries(notification_id: str) -> list[str]:
+    """Return list of pending delivery IDs for a notification."""
+    _setup_django_models()
+    from apps.notifications.models import NotificationDelivery
+
+    deliveries = await sync_to_async(list)(
+        NotificationDelivery.objects.filter(
+            notification_id=notification_id,
+            status=NotificationDelivery.Status.PENDING,
+        ).values_list("id", flat=True)
+    )
+    return [str(d) for d in deliveries]
+
+
+@activity.defn
+async def execute_delivery(delivery_id: str) -> dict:
+    """Execute a single notification delivery.
+
+    Loads the NotificationDelivery by ID, calls the appropriate provider,
+    and updates the delivery status.
+    """
+    _setup_django_models()
+    from apps.notifications.models import NotificationDelivery
+
+    delivery = await sync_to_async(
+        NotificationDelivery.objects.select_related("notification", "channel").get
+    )(id=delivery_id)
+
+    if delivery.status != NotificationDelivery.Status.PENDING:
+        return {"status": "skipped", "reason": "not_pending"}
+
+    delivery.status = NotificationDelivery.Status.SENDING
+    delivery.attempt_count += 1
+    delivery.last_attempt_at = datetime.now(UTC)
+    await sync_to_async(delivery.save)(
+        update_fields=["status", "attempt_count", "last_attempt_at", "updated_at"]
+    )
+
+    try:
+        from services.notifications.registry import registry
+
+        provider_cls = registry.get(delivery.channel.provider_type)
+        provider = provider_cls()
+        result = await sync_to_async(provider.send)(delivery.notification, delivery)
+
+        if result.get("status") == "sent":
+            delivery.status = NotificationDelivery.Status.DELIVERED
+            delivery.delivered_at = datetime.now(UTC)
+            await sync_to_async(delivery.save)(
+                update_fields=["status", "delivered_at", "updated_at"]
+            )
+            return {"status": "delivered"}
+        else:
+            delivery.status = NotificationDelivery.Status.FAILED
+            delivery.error_message = result.get("error", "Unknown error")
+            await sync_to_async(delivery.save)(
+                update_fields=["status", "error_message", "updated_at"]
+            )
+            return {"status": "failed", "error": delivery.error_message}
+    except Exception as exc:
+        delivery.status = NotificationDelivery.Status.FAILED
+        delivery.error_message = str(exc)
+        await sync_to_async(delivery.save)(update_fields=["status", "error_message", "updated_at"])
+        return {"status": "failed", "error": str(exc)}
+
+
+@activity.defn
+async def update_delivery_status(delivery_id: str, status: str, error: str | None = None) -> None:
+    """Update a delivery's status directly."""
+    _setup_django_models()
+    from apps.notifications.models import NotificationDelivery
+
+    delivery = await sync_to_async(NotificationDelivery.objects.get)(id=delivery_id)
+    delivery.status = status
+    if error:
+        delivery.error_message = error
+    await sync_to_async(delivery.save)(update_fields=["status", "error_message", "updated_at"])

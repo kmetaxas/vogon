@@ -88,6 +88,91 @@ class ActionDispatcherTests(TestCase):
         )
         self.check = _make_check(self.organization, name="AD Check")
 
+    def test_check_model_has_notification_policy_name(self):
+        field = Check._meta.get_field("notification_policy_name")
+
+        self.assertEqual(field.default, "")
+        self.assertTrue(field.blank)
+        self.assertEqual(field.max_length, 255)
+
+    @patch("services.notifications.service.NotificationService.create_notification")
+    def test_check_execution_creates_notification(self, mock_create_notification):
+        self.check.notification_policy_name = "pager-policy"
+        self.check.save()
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.DEGRADED,
+            evaluation_result={
+                "summary": "Memory usage is elevated",
+                "findings": [{"severity": "warning", "message": "Memory high"}],
+            },
+        )
+
+        action_dispatcher = _action_dispatcher()
+        logs = action_dispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(logs, [])
+        mock_create_notification.assert_called_once_with(
+            organization=self.organization,
+            severity="warning",
+            attention="normal",
+            title="Check Alert: AD Check",
+            summary="Memory usage is elevated",
+            details="",
+            source_type="check",
+            source_id=str(self.check.id),
+            context={
+                "execution_id": str(execution.id),
+                "health_state": CheckExecution.HealthState.DEGRADED,
+            },
+            policy_name="pager-policy",
+        )
+
+    @patch("services.notifications.service.NotificationService.create_notification")
+    def test_check_notification_failure_not_fatal(self, mock_create_notification):
+        mock_create_notification.side_effect = RuntimeError("notification unavailable")
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.HEALTHY,
+            evaluation_result={"summary": "OK", "findings": []},
+        )
+        self.check.notification_config = {
+            "actions": [
+                {"type": "email", "target": "ops@example.com", "condition": "on_completion"}
+            ]
+        }
+        self.check.save()
+
+        action_dispatcher = _action_dispatcher()
+        logs = action_dispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].action_type, CheckActionLog.ActionType.EMAIL)
+
+    @patch("services.notifications.service.NotificationService.create_notification")
+    def test_check_severity_from_findings(self, mock_create_notification):
+        execution = CheckExecution.objects.create(
+            check=self.check,
+            execution_status=CheckExecution.ExecutionStatus.COMPLETED,
+            health_state=CheckExecution.HealthState.CRITICAL,
+            evaluation_result={
+                "summary": "Multiple issues detected",
+                "findings": [
+                    {"severity": "info", "message": "Minor note"},
+                    {"severity": "critical", "message": "Disk full"},
+                    {"severity": "warning", "message": "CPU high"},
+                ],
+            },
+        )
+
+        action_dispatcher = _action_dispatcher()
+        action_dispatcher.dispatch(self.check, execution, [])
+
+        self.assertEqual(mock_create_notification.call_args.kwargs["severity"], "critical")
+        self.assertEqual(mock_create_notification.call_args.kwargs["attention"], "immediate")
+
     def test_dispatch_on_completion(self):
         execution = CheckExecution.objects.create(
             check=self.check,

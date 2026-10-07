@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class OrganizationFilterMixin:
+    queryset: Any
+    request: Any
+
     def get_queryset(self):
         qs = self.queryset
         user = self.request.user
@@ -125,6 +129,7 @@ class CheckViewSet(viewsets.ModelViewSet):
                 "schedule_expression": check.schedule_expression,
                 "timezone": check.timezone,
                 "notification_config": check.notification_config,
+                "notification_policy_name": check.notification_policy_name,
                 "execution_budget": check.execution_budget,
             },
         }
@@ -157,6 +162,7 @@ class CheckViewSet(viewsets.ModelViewSet):
             schedule_expression=schedule_expression,
             timezone=check_data.get("timezone", "UTC"),
             notification_config=check_data.get("notification_config", {}),
+            notification_policy_name=check_data.get("notification_policy_name", ""),
             execution_budget=check_data.get("execution_budget", {}),
             created_by=self.request.user,
         )

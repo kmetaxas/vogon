@@ -1666,6 +1666,86 @@ class TemporalFanoutActivityTests(TransactionTestCase):
 
 
 class AgentErrorTests(TransactionTestCase):
+    @patch("services.notifications.service.NotificationService.create_notification")
+    def test_execute_llm_tool_raise_notification(self, create_notification):
+        user = User.objects.create_user(username="notify", password="pass")
+        organization = Organization.objects.create(name="Notify", slug="notify")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Notification Session",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+        notification = Mock(id="notification-1")
+        create_notification.return_value = notification
+
+        result = asyncio.run(
+            execute_llm_tool(
+                str(thread.id),
+                {
+                    "name": "raise_notification",
+                    "arguments": {
+                        "severity": "critical",
+                        "attention": "immediate",
+                        "title": "Database outage",
+                        "summary": "Primary database is unavailable",
+                        "details": "Connection attempts are timing out.",
+                        "source_type": "investigation",
+                        "source_id": "incident-123",
+                        "context": {"service": "postgres"},
+                    },
+                },
+                None,
+            )
+        )
+
+        self.assertEqual(result, {"status": "success", "notification_id": "notification-1"})
+        create_notification.assert_called_once_with(
+            organization=organization,
+            severity="critical",
+            attention="immediate",
+            title="Database outage",
+            summary="Primary database is unavailable",
+            details="Connection attempts are timing out.",
+            source_type="investigation",
+            source_id="incident-123",
+            context={"service": "postgres"},
+        )
+
+    @patch("services.notifications.service.NotificationService.create_notification")
+    def test_execute_llm_tool_invalid_severity_rejected(self, create_notification):
+        user = User.objects.create_user(username="badseverity", password="pass")
+        organization = Organization.objects.create(name="Bad Severity", slug="bad-severity")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Invalid Severity Session",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+
+        result = asyncio.run(
+            execute_llm_tool(
+                str(thread.id),
+                {
+                    "name": "raise_notification",
+                    "arguments": {
+                        "severity": "page_everyone",
+                        "attention": "normal",
+                        "title": "Invalid",
+                        "summary": "Invalid severity",
+                        "source_type": "investigation",
+                    },
+                },
+                None,
+            )
+        )
+
+        self.assertEqual(
+            result,
+            {"status": "error", "error": "Invalid severity: page_everyone"},
+        )
+        create_notification.assert_not_called()
+
     def test_execute_llm_tool_no_marvin_matching_labels(self):
         from services.temporal_workers.activities import execute_llm_tool
 

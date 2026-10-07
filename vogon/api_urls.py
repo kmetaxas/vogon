@@ -17,6 +17,12 @@ from apps.marvins.api_views import (
     ResourceTypeViewSet,
     ResourceViewSet,
 )
+from apps.notifications.api_views import (
+    NotificationChannelViewSet,
+    NotificationPolicyViewSet,
+    NotificationRouteViewSet,
+    NotificationViewSet,
+)
 from apps.personalities.api_views import PersonalityViewSet
 from apps.sessions.api_views import (
     AgentEventViewSet,
@@ -51,6 +57,13 @@ router.register(r"checks", CheckViewSet, basename="check")
 router.register(r"check-versions", CheckVersionViewSet, basename="checkversion")
 router.register(r"check-executions", CheckExecutionViewSet, basename="checkexecution")
 router.register(r"check-action-logs", CheckActionLogViewSet, basename="checkactionlog")
+
+router.register(r"notifications", NotificationViewSet, basename="notification")
+router.register(
+    r"notification-channels", NotificationChannelViewSet, basename="notificationchannel"
+)
+router.register(r"notification-policies", NotificationPolicyViewSet, basename="notificationpolicy")
+router.register(r"notification-routes", NotificationRouteViewSet, basename="notificationroute")
 
 urlpatterns = [
     path("", include(router.urls)),

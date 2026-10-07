@@ -1,0 +1,136 @@
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<div class="notification-card">
+<form method="post"
+      action="{% if channel %}{% url 'notifications:channel-update' channel.id %}{% else %}{% url 'notifications:channel-create' %}{% endif %}"
+      class="notification-form"
+      hx-post="{{ request.path }}" hx-target="#channel-list" hx-swap="innerHTML">
+    {% csrf_token %}
+
+    <div class="form-group">
+        <label class="form-label">Name <span class="required">*</span></label>
+        <input type="text" name="name" class="form-control" value="{{ channel.name|default:'' }}" placeholder="e.g. Ops Slack" required>
+    </div>
+
+    <div class="form-group">
+        <label class="form-label">Provider Type <span class="required">*</span></label>
+        <select name="provider_type" class="form-control" required
+                hx-get="{% if channel %}{% url 'notifications:channel-update' channel.id %}{% else %}{% url 'notifications:channel-create' %}{% endif %}"
+                hx-target="#channel-list"
+                hx-swap="innerHTML"
+                hx-include="[name='provider_type']">
+            {% for value, label in provider_types %}
+            <option value="{{ value }}" {% if provider_type == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div id="schema-fields">
+        {% for field in form_fields.fields %}
+        <div class="form-group">
+            <label class="form-label">
+                {{ field.title }}
+                {% if field.required %}<span class="required">*</span>{% endif %}
+            </label>
+
+            {% if field.type == "array" %}
+            <div class="array-field" id="array-items-{{ field.name }}">
+                {% if field.current_value %}
+                    {% for item in field.current_value %}
+                    <div class="array-item-row">
+                        <input type="text" name="field_{{ field.name }}_item[]" class="form-control" value="{{ item }}" placeholder="{{ field.description }}">
+                        <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="array-item-row">
+                        <input type="text" name="field_{{ field.name }}_item[]" class="form-control" value="" placeholder="{{ field.description }}">
+                        <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+                    </div>
+                {% endif %}
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="add-array-item-{{ field.name }}">+ Add item</button>
+            <template id="array-row-template-{{ field.name }}">
+                <div class="array-item-row">
+                    <input type="text" name="field_{{ field.name }}_item[]" class="form-control" value="" placeholder="{{ field.description }}">
+                    <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+                </div>
+            </template>
+            <script>
+            (function() {
+                var addBtn = document.getElementById('add-array-item-{{ field.name }}');
+                var container = document.getElementById('array-items-{{ field.name }}');
+                var template = document.getElementById('array-row-template-{{ field.name }}');
+                if (addBtn && container && template) {
+                    addBtn.addEventListener('click', function() {
+                        var clone = template.content.cloneNode(true);
+                        container.appendChild(clone);
+                    });
+                }
+            })();
+            </script>
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% elif field.type == "enum" %}
+            <select name="field_{{ field.name }}" class="form-control" {% if field.required %}required{% endif %}>
+                {% for choice in field.choices %}
+                <option value="{{ choice }}" {% if field.current_value == choice %}selected{% endif %}>{{ choice }}</option>
+                {% endfor %}
+            </select>
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% elif field.type == "boolean" %}
+            <label class="form-label">
+                <input type="checkbox" name="field_{{ field.name }}" value="1" {% if field.current_value %}checked{% endif %}>
+                {{ field.title }}
+            </label>
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% elif field.type == "integer" or field.type == "number" %}
+            <input type="number" name="field_{{ field.name }}" class="form-control" value="{{ field.current_value|default:'' }}" placeholder="{{ field.description }}" {% if field.required %}required{% endif %}>
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% elif field.secret %}
+            <input type="password" name="field_{{ field.name }}" class="form-control" placeholder="{% if channel %}Leave blank to keep unchanged{% else %}{{ field.description }}{% endif %}">
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% else %}
+            <input type="text" name="field_{{ field.name }}" class="form-control" value="{{ field.current_value|default:'' }}" placeholder="{{ field.description }}" {% if field.required %}required{% endif %}>
+            {% if field.description %}
+            <div class="form-help">{{ field.description }}</div>
+            {% endif %}
+
+            {% endif %}
+        </div>
+        {% empty %}
+        <div class="form-group">
+            <div class="form-help">No configuration fields for this provider.</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="form-group">
+        <label class="form-label">
+            <input type="checkbox" name="enabled" value="1" {% if not channel or channel.enabled %}checked{% endif %}>
+            Enabled
+        </label>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-lg">{% if channel %}Save Changes{% else %}Create Channel{% endif %}</button>
+        <a href="{% url 'notifications:channel-list' %}" class="btn btn-secondary btn-lg" hx-get="{% url 'notifications:channel-list' %}" hx-target="#channel-list" hx-swap="innerHTML">Cancel</a>
+    </div>
+</form>
+</div>

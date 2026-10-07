@@ -28,10 +28,6 @@ class ActionDispatcher:
     ) -> list[CheckActionLog]:
         notification_config = cast(dict[str, Any], check.notification_config or {})
         actions_config = notification_config.get("actions", [])
-
-        if not actions_config:
-            return []
-
         dispatched = []
         previous_health = cls._get_previous_health(check, execution)
         current_health = cls._health_state(execution.health_state if execution else None)
@@ -58,7 +54,46 @@ class ActionDispatcher:
             action_log = cls._create_action_log(check, execution, action_config, findings)
             dispatched.append(action_log)
 
+        cls._create_notification(check, execution)
+
         return dispatched
+
+    @classmethod
+    def _create_notification(cls, check: Check, execution: CheckExecution) -> None:
+        try:
+            from services.notifications.service import NotificationService
+
+            evaluation_result = cast(dict[str, Any], execution.evaluation_result or {})
+            findings = cast(list[dict[str, Any]], evaluation_result.get("findings", []))
+
+            severity_order = {"critical": 3, "warning": 2, "info": 1}
+            if findings:
+                severity = max(
+                    findings,
+                    key=lambda f: severity_order.get(f.get("severity", "info"), 0),
+                ).get("severity", "info")
+            else:
+                severity = "info"
+
+            attention = "immediate" if severity == "critical" else "normal"
+
+            NotificationService.create_notification(
+                organization=check.organization,
+                severity=severity,
+                attention=attention,
+                title=f"Check Alert: {check.name}",
+                summary=evaluation_result.get("summary", ""),
+                details="",
+                source_type="check",
+                source_id=str(check.id),
+                context={
+                    "execution_id": str(execution.id),
+                    "health_state": execution.health_state,
+                },
+                policy_name=str(check.notification_policy_name) or None,
+            )
+        except Exception:
+            logger.exception("Failed to create notification for check %s", check.id)
 
     @classmethod
     def _should_dispatch(

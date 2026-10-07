@@ -1,0 +1,114 @@
+{% extends 'core/settings_base.html' %}
+
+{% block title %}Notifications Settings - Vogon{% endblock %}
+
+{% block extra_css %}
+{{ block.super }}
+<style>
+.notification-settings-wrapper {
+    padding: 0;
+}
+.notification-settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+.notification-settings-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0;
+}
+.notification-settings-subtitle {
+    color: var(--color-muted);
+    margin: 0.25rem 0 0 0;
+    font-size: 0.875rem;
+}
+.notification-section {
+    margin-bottom: 2rem;
+}
+.notification-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+.notification-section-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin: 0;
+}
+.notification-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+}
+.notification-form {
+    max-width: 720px;
+}
+.notification-form .form-group {
+    margin-bottom: 1rem;
+}
+.notification-form .form-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+}
+.route-config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+.route-config-form .table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.route-config-form .table th,
+.route-config-form .table td {
+    padding: 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+}
+.route-config-form .form-control {
+    min-width: 140px;
+}
+.empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-muted);
+}
+</style>
+{% endblock %}
+
+{% block settings_content %}
+<div class="notification-settings-wrapper" id="settings-main">
+    <div class="notification-settings-header">
+        <div>
+            <h1 class="notification-settings-title">Notification Settings</h1>
+            <p class="notification-settings-subtitle">Manage channels, policies, and routing rules</p>
+        </div>
+    </div>
+
+    <div class="notification-section">
+        <div class="notification-section-header">
+            <h2 class="notification-section-title">Channels</h2>
+            <a href="{% url 'notifications:channel-create' %}" class="btn btn-primary" hx-get="{% url 'notifications:channel-create' %}" hx-target="#channel-list" hx-swap="innerHTML">+ New Channel</a>
+        </div>
+        <div id="channel-list">
+            {% include "notifications/settings/_channel_list.html" with channels=channels only %}
+        </div>
+    </div>
+
+    <div class="notification-section">
+        <div class="notification-section-header">
+            <h2 class="notification-section-title">Policies</h2>
+            <a href="{% url 'notifications:policy-create' %}" class="btn btn-primary" hx-get="{% url 'notifications:policy-create' %}" hx-target="#policy-list" hx-swap="innerHTML">+ New Policy</a>
+        </div>
+        <div id="policy-list">
+            {% include "notifications/settings/_policy_list.html" with policies=policies only %}
+        </div>
+    </div>
+</div>
+{% endblock %}

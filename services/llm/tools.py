@@ -106,6 +106,27 @@ _TOOL_SPECS = [
             "required": ["description"],
         },
     ),
+    ToolSpec(
+        name="raise_notification",
+        description=(
+            "Raise a semantic notification to the platform. The system will route it to "
+            "appropriate channels based on configured policies."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
+                "attention": {"type": "string", "enum": ["normal", "immediate"]},
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "details": {"type": "string"},
+                "source_type": {"type": "string"},
+                "source_id": {"type": "string"},
+                "context": {"type": "object"},
+            },
+            "required": ["severity", "attention", "title", "summary", "source_type"],
+        },
+    ),
 ]
 
 _PROMETHEUS_TOOL_SPECS = [

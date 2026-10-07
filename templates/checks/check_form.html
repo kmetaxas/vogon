@@ -62,6 +62,16 @@
                 <textarea name="notification_config" class="form-control" rows="6" id="id-notification-config"></textarea>
                 <div class="form-help">JSON object with notification channels and conditions.</div>
             </div>
+            <div class="form-group">
+                <label class="form-label">Notification Policy</label>
+                <select name="notification_policy_name" class="form-control">
+                    <option value="">— Organization Default —</option>
+                    {% for policy in notification_policies %}
+                    <option value="{{ policy.name }}" {% if check and check.notification_policy_name == policy.name %}selected{% endif %}>{{ policy.name }}{% if policy.is_default %} (default){% endif %}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-help">Select a notification policy to route alerts, or leave blank for the organization default.</div>
+            </div>
             {% if check and check.notification_config %}
             {{ check.notification_config|json_script:"notification-config-data" }}
             {% else %}

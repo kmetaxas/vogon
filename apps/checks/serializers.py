@@ -31,6 +31,7 @@ class CheckSerializer(serializers.ModelSerializer):
             "schedule_expression",
             "timezone",
             "notification_config",
+            "notification_policy_name",
             "execution_budget",
             "llm_provider",
             "llm_provider_name",

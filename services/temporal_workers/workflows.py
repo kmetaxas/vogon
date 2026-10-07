@@ -959,6 +959,59 @@ class AutonomousInvestigationWorkflow:
 
 
 @workflow.defn
+class NotificationDeliveryWorkflow:
+    @workflow.run
+    async def run(self, notification_id: str) -> dict:
+        workflow.logger.info(f"Starting delivery workflow for notification {notification_id}")
+
+        deliveries = await workflow.execute_activity(
+            "get_pending_deliveries",
+            args=[notification_id],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+
+        delivered_count = 0
+        failed_count = 0
+
+        for delivery_id in deliveries:
+            try:
+                result = await workflow.execute_activity(
+                    "execute_delivery",
+                    args=[delivery_id],
+                    start_to_close_timeout=timedelta(seconds=120),
+                    retry_policy=RetryPolicy(
+                        initial_interval=timedelta(seconds=5),
+                        maximum_interval=timedelta(seconds=60),
+                        maximum_attempts=3,
+                    ),
+                )
+
+                if result.get("status") == "delivered":
+                    delivered_count += 1
+                else:
+                    failed_count += 1
+                    await workflow.execute_activity(
+                        "update_delivery_status",
+                        args=[delivery_id, "failed", result.get("error", "")],
+                        start_to_close_timeout=timedelta(seconds=30),
+                    )
+            except Exception as exc:
+                workflow.logger.error(f"Delivery {delivery_id} failed: {exc}")
+                failed_count += 1
+                await workflow.execute_activity(
+                    "update_delivery_status",
+                    args=[delivery_id, "failed", str(exc)],
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
+
+        return {
+            "notification_id": notification_id,
+            "delivered_count": delivered_count,
+            "failed_count": failed_count,
+        }
+
+
+@workflow.defn
 class CapabilityExecutionWorkflow:
     """Dedicated workflow for executing a single capability on a Marvin."""
 

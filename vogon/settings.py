@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.infradesigns",
     "apps.personalities",
     "apps.checks",
+    "apps.notifications",
     "apps.ws",
     "channels_postgres",
 ]

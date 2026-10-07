@@ -85,6 +85,7 @@
             <a href="{% url 'personalities:personality-list' %}?layout=settings" {% if active_tab == 'personalities' %}class="active"{% endif %}>Personalities</a>
             <a href="#" onclick="return false;">Account</a>
             <a href="{% url 'core:org-detail' %}" {% if active_tab == 'organization' %}class="active"{% endif %}>Organization</a>
+            <a href="{% url 'notifications:settings' %}" {% if active_tab == 'notifications' %}class="active"{% endif %}>Notifications</a>
         </nav>
     </aside>
     <div class="settings-main" id="settings-main">
