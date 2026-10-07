@@ -63,6 +63,12 @@ class Check(models.Model):
         blank=True,
         help_text="Action configuration: channels, conditions, recipients",
     )
+    notification_policy_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Name of notification policy to use. Leave blank for org default.",
+    )
     execution_budget = models.JSONField(
         default=dict,
         blank=True,

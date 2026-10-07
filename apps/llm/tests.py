@@ -1,9 +1,49 @@
+# pyright: reportAttributeAccessIssue=false
+
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from apps.core.models import Organization, OrganizationMembership, User
 from apps.llm.models import LLMProvider
+
+
+class LLMToolTests(TestCase):
+    def test_llm_tool_in_standard_tools(self):
+        from services.llm.tools import STANDARD_TOOLS
+
+        self.assertIn("raise_notification", {tool.name for tool in STANDARD_TOOLS})
+
+    def test_llm_tool_schema_no_operational_fields(self):
+        from services.llm.tools import STANDARD_TOOLS
+
+        tool = next(tool for tool in STANDARD_TOOLS if tool.name == "raise_notification")
+        properties = tool.parameters["properties"]
+
+        self.assertEqual(
+            set(properties),
+            {
+                "severity",
+                "attention",
+                "title",
+                "summary",
+                "details",
+                "source_type",
+                "source_id",
+                "context",
+            },
+        )
+        self.assertTrue(
+            {
+                "channel",
+                "provider",
+                "webhook",
+                "webhook_url",
+                "email",
+                "credentials",
+                "policy_name",
+            }.isdisjoint(properties)
+        )
 
 
 class LLMRegistryTests(TestCase):

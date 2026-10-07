@@ -14,6 +14,7 @@ from apps.checks.models import (
     CheckVersion,
 )
 from apps.core.mixins import OrganizationRequiredMixin
+from apps.notifications.models import NotificationPolicy
 from apps.personalities.models import Personality
 
 
@@ -49,6 +50,9 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             "organization": self.organization,
             "schedule_types": Check.ScheduleType.choices,
             "personalities": _personality_queryset(self.organization),
+            "notification_policies": NotificationPolicy.objects.filter(
+                organization=self.organization
+            ).order_by("name"),
         }
         return render(request, "checks/check_form.html", context)
 
@@ -67,6 +71,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                 "schedule_type": request.POST.get("schedule_type", Check.ScheduleType.INTERVAL),
                 "schedule_expression": request.POST.get("schedule_expression", "60"),
                 "timezone": request.POST.get("timezone", "UTC"),
+                "notification_policy_name": request.POST.get("notification_policy_name", ""),
             }
             return render(
                 request,
@@ -75,6 +80,9 @@ class CheckCreateView(OrganizationRequiredMixin, View):
                     "organization": self.organization,
                     "schedule_types": Check.ScheduleType.choices,
                     "personalities": _personality_queryset(self.organization),
+                    "notification_policies": NotificationPolicy.objects.filter(
+                        organization=self.organization
+                    ).order_by("name"),
                     "check": check,
                     "error": "Invalid JSON in config fields.",
                     "notification_config_raw": notification_config_raw,
@@ -90,6 +98,7 @@ class CheckCreateView(OrganizationRequiredMixin, View):
             schedule_expression=request.POST.get("schedule_expression", "60"),
             timezone=request.POST.get("timezone", "UTC"),
             notification_config=notification_config,
+            notification_policy_name=request.POST.get("notification_policy_name", "").strip(),
             personality_id=request.POST.get("personality") or None,
             created_by=request.user,
         )
@@ -112,6 +121,9 @@ class CheckEditView(OrganizationRequiredMixin, View):
             "check": check,
             "schedule_types": Check.ScheduleType.choices,
             "personalities": _personality_queryset(self.organization),
+            "notification_policies": NotificationPolicy.objects.filter(
+                organization=self.organization
+            ).order_by("name"),
         }
         return render(request, "checks/check_form.html", context)
 
@@ -125,6 +137,9 @@ class CheckEditView(OrganizationRequiredMixin, View):
             "schedule_expression", check.schedule_expression
         )
         check.timezone = request.POST.get("timezone", check.timezone)
+        check.notification_policy_name = request.POST.get(
+            "notification_policy_name", check.notification_policy_name
+        ).strip()
         check.personality_id = request.POST.get("personality") or None
 
         notification_config_raw = request.POST.get("notification_config", "{}").strip()
@@ -141,6 +156,9 @@ class CheckEditView(OrganizationRequiredMixin, View):
                     "check": check,
                     "schedule_types": Check.ScheduleType.choices,
                     "personalities": _personality_queryset(self.organization),
+                    "notification_policies": NotificationPolicy.objects.filter(
+                        organization=self.organization
+                    ).order_by("name"),
                     "error": "Invalid JSON in config fields.",
                     "notification_config_raw": notification_config_raw,
                 },

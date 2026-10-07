@@ -1,0 +1,123 @@
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<div class="notification-card">
+
+<div class="route-config-header">
+    <h2>Routes for {{ policy.name }}</h2>
+    <a href="{% url 'notifications:policy-list' %}" class="btn btn-secondary" hx-get="{% url 'notifications:policy-list' %}" hx-target="#policy-list" hx-swap="innerHTML">&larr; Back to Policies</a>
+</div>
+
+<form method="post" action="{% url 'notifications:route-config' policy.id %}" class="route-config-form" hx-post="{% url 'notifications:route-config' policy.id %}" hx-target="#policy-list" hx-swap="innerHTML">
+    {% csrf_token %}
+
+    <table class="table" id="route-table">
+        <thead>
+            <tr>
+                <th>Severity</th>
+                <th>Attention</th>
+                <th>Channel</th>
+                <th>Enabled</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for route in routes %}
+            <tr class="route-row">
+                <td>
+                    <select name="severity_{{ route.id }}" class="form-control">
+                        <option value="" {% if not route.severity %}selected{% endif %}>— Any —</option>
+                        {% for value, label in severity_choices %}
+                        <option value="{{ value }}" {% if route.severity == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <select name="attention_{{ route.id }}" class="form-control">
+                        <option value="" {% if not route.attention %}selected{% endif %}>— Any —</option>
+                        {% for value, label in attention_choices %}
+                        <option value="{{ value }}" {% if route.attention == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <select name="channel_{{ route.id }}" class="form-control" required>
+                        {% for ch in channels %}
+                        <option value="{{ ch.id }}" {% if route.channel_id == ch.id %}selected{% endif %}>{{ ch.name }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <input type="checkbox" name="enabled_{{ route.id }}" value="1" {% if route.enabled %}checked{% endif %}>
+                </td>
+                <td>
+                    <button type="button" class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">Remove</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if not routes %}
+    <p class="empty-state" id="no-routes-msg">No routes configured yet. Add a row to get started.</p>
+    {% endif %}
+
+    <div class="form-actions">
+        <button type="button" class="btn btn-secondary" id="add-route-btn">+ Add Row</button>
+        <button type="submit" class="btn btn-primary">Save Routes</button>
+    </div>
+</form>
+
+<template id="route-row-template">
+    <tr class="route-row">
+        <td>
+            <select name="severity_new[]" class="form-control">
+                <option value="" selected>— Any —</option>
+                {% for value, label in severity_choices %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
+            <select name="attention_new[]" class="form-control">
+                <option value="" selected>— Any —</option>
+                {% for value, label in attention_choices %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
+            <select name="channel_new[]" class="form-control" required>
+                {% for ch in channels %}
+                <option value="{{ ch.id }}">{{ ch.name }}</option>
+                {% endfor %}
+            </select>
+        </td>
+        <td>
+            <input type="checkbox" name="enabled_new[]" value="1" checked>
+        </td>
+        <td>
+            <button type="button" class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">Remove</button>
+        </td>
+    </tr>
+</template>
+
+<script>
+(function() {
+    var addBtn = document.getElementById('add-route-btn');
+    var tableBody = document.querySelector('#route-table tbody');
+    var template = document.getElementById('route-row-template');
+    var noRoutesMsg = document.getElementById('no-routes-msg');
+
+    if (addBtn && tableBody && template) {
+        addBtn.addEventListener('click', function() {
+            if (noRoutesMsg) noRoutesMsg.style.display = 'none';
+            var clone = template.content.cloneNode(true);
+            tableBody.appendChild(clone);
+        });
+    }
+})();
+</script>
+
+</div>

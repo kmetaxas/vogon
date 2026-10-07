@@ -18,9 +18,11 @@ from services.temporal_workers.activities import (
     create_tool_call_messages,
     dispatch_actions,
     execute_capability,
+    execute_delivery,
     execute_llm_tool,
     gather_thread_context,
     generate_capability_embedding,
+    get_pending_deliveries,
     get_user_messages,
     initialize_session,
     load_check_context,
@@ -28,11 +30,13 @@ from services.temporal_workers.activities import (
     set_grpc_service,
     set_session_status,
     update_check_execution,
+    update_delivery_status,
 )
 from services.temporal_workers.client import get_temporal_client
 from services.temporal_workers.workflows import (
     AutonomousInvestigationWorkflow,
     CapabilityExecutionWorkflow,
+    NotificationDeliveryWorkflow,
     ThreadWorkflow,
     TroubleshootWorkflow,
 )
@@ -102,6 +106,7 @@ async def run_grpc_and_temporal():
             ThreadWorkflow,
             CapabilityExecutionWorkflow,
             AutonomousInvestigationWorkflow,
+            NotificationDeliveryWorkflow,
         ],
         activities=[
             build_llm_context,
@@ -110,17 +115,20 @@ async def run_grpc_and_temporal():
             create_tool_call_messages,
             dispatch_actions,
             execute_capability,
+            execute_delivery,
             execute_llm_tool,
+            gather_thread_context,
+            generate_capability_embedding,
+            get_pending_deliveries,
+            get_user_messages,
             initialize_session,
             check_completion,
-            gather_thread_context,
             create_assistant_message,
-            get_user_messages,
             record_agent_event,
-            generate_capability_embedding,
             load_check_context,
             set_session_status,
             update_check_execution,
+            update_delivery_status,
         ],
     )
 

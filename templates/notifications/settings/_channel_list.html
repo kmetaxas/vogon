@@ -1,0 +1,39 @@
+{% if channels %}
+<table class="table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Provider</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for channel in channels %}
+        <tr id="channel-row-{{ channel.id }}">
+            <td>{{ channel.name }}</td>
+            <td>{{ channel.get_provider_type_display }}</td>
+            <td>
+                {% if channel.enabled %}
+                    <span class="badge badge-success">Enabled</span>
+                {% else %}
+                    <span class="badge badge-secondary">Disabled</span>
+                {% endif %}
+            </td>
+            <td>
+                <a href="{% url 'notifications:channel-update' channel.id %}" class="btn btn-sm btn-secondary" hx-get="{% url 'notifications:channel-update' channel.id %}" hx-target="#channel-list" hx-swap="innerHTML">Edit</a>
+                <form method="post" action="{% url 'notifications:channel-delete' channel.id %}" style="display:inline;" hx-post="{% url 'notifications:channel-delete' channel.id %}" hx-target="#channel-list" hx-swap="outerHTML" hx-confirm="Delete channel '{{ channel.name }}'?">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+    <p>No notification channels yet.</p>
+    <a href="{% url 'notifications:channel-create' %}" class="btn btn-primary" hx-get="{% url 'notifications:channel-create' %}" hx-target="#channel-list" hx-swap="innerHTML">Create your first channel</a>
+</div>
+{% endif %}

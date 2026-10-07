@@ -1,0 +1,4 @@
+Title: {{ notification.title }}
+Severity: {{ notification.severity }}
+Attention: {{ notification.attention }}
+Summary: {{ notification.summary }}

@@ -1,0 +1,36 @@
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<div class="notification-card">
+<form method="post"
+      action="{% if policy %}{% url 'notifications:policy-update' policy.id %}{% else %}{% url 'notifications:policy-create' %}{% endif %}"
+      class="notification-form"
+      hx-post="{{ request.path }}" hx-target="#policy-list" hx-swap="innerHTML">
+    {% csrf_token %}
+
+    <div class="form-group">
+        <label class="form-label">Name <span class="required">*</span></label>
+        <input type="text" name="name" class="form-control" value="{{ policy.name|default:'' }}" placeholder="e.g. Default Policy" required>
+    </div>
+
+    <div class="form-group">
+        <label class="form-label">
+            <input type="checkbox" name="is_default" value="1" {% if policy and policy.is_default %}checked{% endif %}>
+            Default Policy
+        </label>
+        <div class="form-help">Only one default policy is allowed per organization.</div>
+    </div>
+
+    <div class="form-group">
+        <label class="form-label">Dedup Window (seconds)</label>
+        <input type="number" name="dedup_window_seconds" class="form-control" value="{{ policy.dedup_window_seconds|default:300 }}" min="0" required>
+        <div class="form-help">Time window in which duplicate notifications are suppressed.</div>
+    </div>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-lg">{% if policy %}Save Changes{% else %}Create Policy{% endif %}</button>
+        <a href="{% url 'notifications:policy-list' %}" class="btn btn-secondary btn-lg" hx-get="{% url 'notifications:policy-list' %}" hx-target="#policy-list" hx-swap="innerHTML">Cancel</a>
+    </div>
+</form>
+</div>

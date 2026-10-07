@@ -1,0 +1,40 @@
+{% if policies %}
+<table class="table">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Default</th>
+            <th>Dedup Window</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for policy in policies %}
+        <tr id="policy-row-{{ policy.id }}">
+            <td>{{ policy.name }}</td>
+            <td>
+                {% if policy.is_default %}
+                    <span class="badge badge-success">Default</span>
+                {% else %}
+                    <span class="badge badge-secondary">—</span>
+                {% endif %}
+            </td>
+            <td>{{ policy.dedup_window_seconds }}s</td>
+            <td>
+                <a href="{% url 'notifications:route-config' policy.id %}" class="btn btn-sm btn-secondary" hx-get="{% url 'notifications:route-config' policy.id %}" hx-target="#policy-list" hx-swap="innerHTML">Routes</a>
+                <a href="{% url 'notifications:policy-update' policy.id %}" class="btn btn-sm btn-secondary" hx-get="{% url 'notifications:policy-update' policy.id %}" hx-target="#policy-list" hx-swap="innerHTML">Edit</a>
+                <form method="post" action="{% url 'notifications:policy-delete' policy.id %}" style="display:inline;" hx-post="{% url 'notifications:policy-delete' policy.id %}" hx-target="#policy-list" hx-swap="outerHTML" hx-confirm="Delete policy '{{ policy.name }}'?">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+    <p>No notification policies yet.</p>
+    <a href="{% url 'notifications:policy-create' %}" class="btn btn-primary" hx-get="{% url 'notifications:policy-create' %}" hx-target="#policy-list" hx-swap="innerHTML">Create your first policy</a>
+</div>
+{% endif %}
