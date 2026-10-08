@@ -2,28 +2,47 @@
 {% block title %}Receivers{% endblock %}
 {% block content %}
 <div class="container">
-    <h1>Receivers</h1>
-    <a href="{% url 'checks:receiver-create' %}" class="btn btn-primary">New Receiver</a>
-    <div class="card">
-        <table class="table">
-            <thead><tr><th>Name</th><th>Check</th><th>Source</th><th>Status</th><th>Admission</th><th>Actions</th></tr></thead>
+    <div class="page-header">
+        <h1>Receivers</h1>
+        <a href="{% url 'checks:receiver-create' %}" class="btn btn-primary">New Receiver</a>
+    </div>
+    <div class="list-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Check</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th>Admission</th>
+                    <th style="text-align:right;">Actions</th>
+                </tr>
+            </thead>
             <tbody>
-            {% for receiver in receivers %}
-            <tr>
-                <td><a href="{% url 'checks:receiver-detail' receiver.id %}">{{ receiver.name }}</a></td>
-                <td>{{ receiver.check.name }}</td>
-                <td>{{ receiver.source_type }}</td>
-                <td>{% if receiver.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</td>
-                <td>{{ receiver.get_admission_mode_display }}</td>
-                <td>
-                    <a href="{% url 'checks:receiver-detail' receiver.id %}" class="btn btn-sm btn-secondary">View</a>
-                    <a href="{% url 'checks:receiver-edit' receiver.id %}" class="btn btn-sm btn-secondary">Edit</a>
-                    <form method="post" action="{% url 'checks:receiver-toggle' receiver.id %}" style="display:inline;">{% csrf_token %}<button type="submit" class="btn btn-sm {% if receiver.enabled %}btn-danger{% else %}btn-primary{% endif %}">{% if receiver.enabled %}Disable{% else %}Enable{% endif %}</button></form>
-                    <form method="post" action="{% url 'checks:receiver-regenerate-secret' receiver.id %}" style="display:inline;">{% csrf_token %}<button type="submit" class="btn btn-sm btn-warning">Regenerate Secret</button></form>
-                    <form method="post" action="{% url 'checks:receiver-delete' receiver.id %}" style="display:inline;" onsubmit="return confirm('Delete this receiver?');">{% csrf_token %}<button type="submit" class="btn btn-sm btn-danger">Delete</button></form>
-                </td>
-            </tr>
-            {% endfor %}
+                {% for receiver in receivers %}
+                <tr>
+                    <td><a href="{% url 'checks:receiver-detail' receiver.id %}">{{ receiver.name }}</a></td>
+                    <td>{{ receiver.check.name }}</td>
+                    <td><span class="schedule-badge-interval">{{ receiver.source_type }}</span></td>
+                    <td>
+                        {% if receiver.enabled %}
+                            <span class="badge badge-success">Enabled</span>
+                        {% else %}
+                            <span class="badge badge-secondary">Disabled</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ receiver.get_admission_mode_display }}</td>
+                    <td style="text-align:right;">
+                        <div class="row-actions">
+                            <a href="{% url 'checks:receiver-detail' receiver.id %}" class="btn btn-sm btn-secondary">View</a>
+                            <a href="{% url 'checks:receiver-edit' receiver.id %}" class="btn btn-sm btn-secondary">Edit</a>
+                            <form method="post" action="{% url 'checks:receiver-toggle' receiver.id %}" style="display:inline;">{% csrf_token %}<button type="submit" class="btn btn-sm {% if receiver.enabled %}btn-danger{% else %}btn-primary{% endif %}">{% if receiver.enabled %}Disable{% else %}Enable{% endif %}</button></form>
+                            <form method="post" action="{% url 'checks:receiver-regenerate-secret' receiver.id %}" style="display:inline;">{% csrf_token %}<button type="submit" class="btn btn-sm btn-secondary">Regenerate Secret</button></form>
+                            <form method="post" action="{% url 'checks:receiver-delete' receiver.id %}" style="display:inline;" onsubmit="return confirm('Delete this receiver?');">{% csrf_token %}<button type="submit" class="btn btn-sm btn-danger">Delete</button></form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
             </tbody>
         </table>
     </div>

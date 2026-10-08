@@ -1,16 +1,25 @@
 <tr id="check-row-{{ check.id }}">
     <td><a href="{% url 'checks:check-detail' check.id %}">{{ check.name }}</a></td>
-    <td>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}</td>
+    <td>
+        {% if check.schedule_type == "event" %}
+            <span class="schedule-badge-event">Event</span>
+        {% else %}
+            <span class="schedule-badge-{{ check.schedule_type }}">{{ check.get_schedule_type_display }}: {{ check.schedule_expression }}</span>
+        {% endif %}
+    </td>
     <td>{% if check.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-secondary">Disabled</span>{% endif %}</td>
     <td>{% if check.last_execution %}{{ check.last_execution.triggered_at|timesince }}{% else %}Never{% endif %}</td>
-    <td>
-        <a href="{% url 'checks:check-detail' check.id %}" class="btn btn-sm btn-secondary">View</a>
-        <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-sm btn-secondary">Edit</a>
-        <button class="btn btn-sm {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
-                hx-post="{% url 'checks:check-toggle' check.id %}"
-                hx-target="#check-row-{{ check.id }}"
-                hx-swap="outerHTML">
-            {% if check.enabled %}Disable{% else %}Enable{% endif %}
-        </button>
+    <td style="text-align:right;">
+        <div class="row-actions">
+            <a href="{% url 'checks:check-detail' check.id %}" class="btn btn-sm btn-secondary">View</a>
+            <a href="{% url 'checks:check-edit' check.id %}" class="btn btn-sm btn-secondary">Edit</a>
+            <button class="btn btn-sm {% if check.enabled %}btn-danger{% else %}btn-primary{% endif %}"
+                    hx-post="{% url 'checks:check-toggle' check.id %}"
+                    hx-target="#check-row-{{ check.id }}"
+                    hx-swap="outerHTML">
+                {% if check.enabled %}Disable{% else %}Enable{% endif %}
+            </button>
+            <form method="post" action="{% url 'checks:check-delete' check.id %}" style="display:inline;" onsubmit="return confirm('Delete this check?');">{% csrf_token %}<button type="submit" class="btn btn-sm btn-danger">Delete</button></form>
+        </div>
     </td>
 </tr>

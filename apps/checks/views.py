@@ -258,6 +258,21 @@ class CheckDryRunView(OrganizationRequiredMixin, View):
             )
 
 
+class CheckDeleteView(OrganizationRequiredMixin, View):
+    def post(self, request, check_id):
+        check = get_object_or_404(Check, id=check_id, organization=self.organization)
+        try:
+            import asyncio
+
+            from services.checks.scheduler import CheckScheduler
+
+            asyncio.run(CheckScheduler.delete_schedule(str(check.id)))
+        except Exception:
+            pass
+        check.delete()
+        return HttpResponseRedirect(reverse("checks:check-list"))
+
+
 class CheckExecutionDetailView(OrganizationRequiredMixin, View):
     def get(self, request, check_id, execution_id):
         check = get_object_or_404(Check, id=check_id, organization=self.organization)

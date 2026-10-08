@@ -36,7 +36,7 @@
             </div>
             <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Schedule</div>
-                <div>{{ check.get_schedule_type_display }}: {{ check.schedule_expression }} ({{ check.timezone }})</div>
+                <div>{% if check.schedule_type == "event" %}Event-based{% else %}{{ check.get_schedule_type_display }}: {{ check.schedule_expression }} ({{ check.timezone }}){% endif %}</div>
             </div>
             <div>
                 <div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; color:var(--color-text-secondary);">Status</div>

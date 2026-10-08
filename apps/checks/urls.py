@@ -2,6 +2,7 @@ from django.urls import path
 
 from apps.checks.views import (
     CheckCreateView,
+    CheckDeleteView,
     CheckDetailView,
     CheckDryRunView,
     CheckEditView,
@@ -27,6 +28,7 @@ urlpatterns = [
     path("<uuid:check_id>/toggle/", CheckToggleView.as_view(), name="check-toggle"),
     path("<uuid:check_id>/trigger/", CheckTriggerView.as_view(), name="check-trigger"),
     path("<uuid:check_id>/dry-run/", CheckDryRunView.as_view(), name="check-dry-run"),
+    path("<uuid:check_id>/delete/", CheckDeleteView.as_view(), name="check-delete"),
     path(
         "<uuid:check_id>/executions/<uuid:execution_id>/",
         CheckExecutionDetailView.as_view(),

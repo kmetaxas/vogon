@@ -1107,6 +1107,19 @@ class CheckUIViewTests(TestCase):
         check.refresh_from_db()
         self.assertEqual(check.name, "Edited Name")
 
+    def test_check_delete_view(self):
+        check = _make_check(self.organization, name="Delete Me")
+        response = self.client.post(f"/checks/{check.id}/delete/")
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Check.objects.filter(id=check.id).exists())
+
+    def test_check_delete_view_404_for_other_org(self):
+        other_org = Organization.objects.create(name="Other Org", slug="other-delete-org")
+        other_check = _make_check(other_org, name="Other Check")
+        response = self.client.post(f"/checks/{other_check.id}/delete/")
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Check.objects.filter(id=other_check.id).exists())
+
     @patch("services.checks.scheduler.CheckScheduler.trigger_now", new_callable=AsyncMock)
     def test_trigger_post_returns_200(self, mock_trigger):
         mock_trigger.return_value = "workflow-id-123"

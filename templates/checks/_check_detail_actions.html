@@ -20,5 +20,6 @@
                 hx-swap="innerHTML">
             Dry Run
         </button>
+        <form method="post" action="{% url 'checks:check-delete' check.id %}" style="display:inline;" onsubmit="return confirm('Delete this check?');">{% csrf_token %}<button type="submit" class="btn btn-sm btn-danger">Delete</button></form>
     </div>
 </div>
