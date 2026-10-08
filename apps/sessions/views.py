@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 def _resolved_provider(session):
     from apps.llm.models import LLMProvider
 
-    if session.llm_provider:
+    if session.llm_provider and not session.llm_provider.is_jev:
         return session.llm_provider
     return (
-        LLMProvider.objects.filter(organization=session.organization, enabled=True)
+        LLMProvider.objects.filter(organization=session.organization, enabled=True, is_jev=False)
         .order_by("-is_default")
         .first()
     )
@@ -438,7 +438,7 @@ class SessionDetailView(OrganizationRequiredMixin, View):
             context = _thread_ui_context(session, request.user)
         context.update(_thread_messages_context(session, primary_thread))
         context["llm_providers"] = LLMProvider.objects.filter(
-            organization=self.organization, enabled=True
+            organization=self.organization, enabled=True, is_jev=False
         ).order_by("-is_default", "name")
         return render(request, "sessions/session_detail.html", context)
 
@@ -475,7 +475,7 @@ class ThreadDetailPartialView(OrganizationRequiredMixin, View):
             "primary_thread": Thread.objects.filter(tsession=session, user=request.user).first(),
             "can_complete_session": session.created_by_id == request.user.id,
             "llm_providers": LLMProvider.objects.filter(
-                organization=self.organization, enabled=True
+                organization=self.organization, enabled=True, is_jev=False
             ).order_by("-is_default", "name"),
             "resolved_provider": _resolved_provider(session),
         }

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ receiver.name }}{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>{{ receiver.name }}</h1>
+    <a href="{% url 'checks:receiver-list' %}" class="btn btn-secondary">Back</a>
+    {% if created %}
+    <div class="alert alert-success">
+        <strong>Receiver created!</strong> Your webhook secret has been generated. Copy it now — it will not be shown again.
+        {% if secret %}
+        <div style="margin-top:var(--spacing-sm); padding:var(--spacing-sm); background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius); font-family:monospace; word-break:break-all;">
+            {{ secret }}
+        </div>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="navigator.clipboard.writeText('{{ secret|escapejs }}'); this.textContent='Copied!';" style="margin-top:var(--spacing-sm);">Copy Secret to Clipboard</button>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if request.GET.regenerated %}
+    <div class="alert alert-success">
+        <strong>Secret regenerated!</strong> Your new webhook secret is shown below. Copy it now — it will not be shown again.
+        {% if secret %}
+        <div style="margin-top:var(--spacing-sm); padding:var(--spacing-sm); background:var(--color-bg); border:1px solid var(--color-border); border-radius:var(--radius); font-family:monospace; word-break:break-all;">
+            {{ secret }}
+        </div>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="navigator.clipboard.writeText('{{ secret|escapejs }}'); this.textContent='Copied!';" style="margin-top:var(--spacing-sm);">Copy Secret to Clipboard</button>
+        {% endif %}
+    </div>
+    {% endif %}
+    <div class="card">
+        <h2>Details</h2>
+        <p><strong>Check:</strong> {{ receiver.check.name }}</p>
+        <p><strong>Source:</strong> {{ receiver.source_type }}</p>
+        <p><strong>Enabled:</strong> {% if receiver.enabled %}Yes{% else %}No{% endif %}</p>
+        <p><strong>Admission Mode:</strong> {{ receiver.get_admission_mode_display }}</p>
+        <p><strong>Admission LLM Provider:</strong> 
+            {% if receiver.admission_llm_provider %}
+                {{ receiver.admission_llm_provider.name }}
+            {% else %}
+                Organization JEV Default
+            {% endif %}
+        </p>
+        <p><strong>Webhook URL:</strong> /api/check-receivers/{{ receiver.id }}/&lt;SECRET&gt;/</p>
+    </div>
+    <div class="card">
+        <h2>Recent Events</h2>
+        <table class="table">
+            <thead><tr><th>Fingerprint</th><th>Status</th><th>Disposition</th><th>Reasoning</th><th>Created</th></tr></thead>
+            <tbody>
+            {% for event in events %}
+            <tr>
+                <td>{{ event.external_fingerprint }}</td>
+                <td>{{ event.get_status_display }}</td>
+                <td>{{ event.get_disposition_display }}</td>
+                <td>
+                    {% with decision=event.admission_decisions.first %}
+                    {% if decision.reasoning %}
+                    <details>
+                        <summary>Model Reasoning</summary>
+                        <pre>{{ decision.reasoning }}</pre>
+                    </details>
+                    {% else %}
+                    —
+                    {% endif %}
+                    {% endwith %}
+                </td>
+                <td>{{ event.created_at }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

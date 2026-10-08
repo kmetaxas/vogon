@@ -37,12 +37,12 @@
                 </select>
                 <div class="form-help">Interval runs every N seconds. Cron runs on a schedule expression.</div>
             </div>
-            <div class="form-group">
+            <div id="schedule-expression-group" class="form-group">
                 <label class="form-label">Schedule Expression</label>
                 <input type="text" name="schedule_expression" class="form-control" value="{{ check.schedule_expression|default:'60' }}" required>
                 <div class="form-help">e.g. '60' for interval seconds, or '0 9 * * *' for cron</div>
             </div>
-            <div class="form-group">
+            <div id="timezone-group" class="form-group">
                 <label class="form-label">Timezone</label>
                 <input type="text" name="timezone" class="form-control" value="{{ check.timezone|default:'UTC' }}">
                 <div class="form-help">Timezone for cron schedules (e.g. UTC, America/New_York)</div>
@@ -103,6 +103,30 @@
             </script>
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
+            <script>
+            (function() {
+                var scheduleType = document.querySelector('select[name="schedule_type"]');
+                var scheduleExpressionGroup = document.getElementById('schedule-expression-group');
+                var timezoneGroup = document.getElementById('timezone-group');
+                var scheduleExpression = document.querySelector('input[name="schedule_expression"]');
+                if (!scheduleType || !scheduleExpressionGroup || !timezoneGroup || !scheduleExpression) return;
+
+                function toggleScheduleFields() {
+                    if (scheduleType.value === 'event') {
+                        scheduleExpressionGroup.style.display = 'none';
+                        timezoneGroup.style.display = 'none';
+                        scheduleExpression.removeAttribute('required');
+                    } else {
+                        scheduleExpressionGroup.style.display = '';
+                        timezoneGroup.style.display = '';
+                        scheduleExpression.setAttribute('required', 'required');
+                    }
+                }
+
+                scheduleType.addEventListener('change', toggleScheduleFields);
+                toggleScheduleFields();
+            })();
+            </script>
         </form>
     </div>
 </div>

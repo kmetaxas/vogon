@@ -4,8 +4,11 @@ from rest_framework.routers import DefaultRouter
 from apps.checks.api_views import (
     CheckActionLogViewSet,
     CheckExecutionViewSet,
+    CheckReceiverViewSet,
     CheckVersionViewSet,
     CheckViewSet,
+    ReceiverAdmissionDecisionViewSet,
+    ReceiverEventViewSet,
 )
 from apps.core.api_views import OrganizationViewSet
 from apps.infradesigns.api_views import InfrastructureDesignViewSet
@@ -57,6 +60,13 @@ router.register(r"checks", CheckViewSet, basename="check")
 router.register(r"check-versions", CheckVersionViewSet, basename="checkversion")
 router.register(r"check-executions", CheckExecutionViewSet, basename="checkexecution")
 router.register(r"check-action-logs", CheckActionLogViewSet, basename="checkactionlog")
+router.register(r"check-receivers", CheckReceiverViewSet, basename="checkreceiver")
+router.register(r"receiver-events", ReceiverEventViewSet, basename="receiverevent")
+router.register(
+    r"receiver-admission-decisions",
+    ReceiverAdmissionDecisionViewSet,
+    basename="receiveradmissiondecision",
+)
 
 router.register(r"notifications", NotificationViewSet, basename="notification")
 router.register(

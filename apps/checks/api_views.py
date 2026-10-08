@@ -10,13 +10,20 @@ from apps.checks.models import (
     Check,
     CheckActionLog,
     CheckExecution,
+    CheckReceiver,
     CheckVersion,
+    ReceiverAdmissionDecision,
+    ReceiverEvent,
 )
 from apps.checks.serializers import (
     CheckActionLogSerializer,
     CheckExecutionSerializer,
+    CheckReceiverSerializer,
     CheckSerializer,
     CheckVersionSerializer,
+    ReceiverAdmissionDecisionSerializer,
+    ReceiverEventSerializer,
+    build_receiver_webhook_url,
 )
 from services.checks.scheduler import CheckScheduler
 
@@ -198,3 +205,75 @@ class CheckActionLogViewSet(OrganizationFilterMixin, viewsets.ModelViewSet):
     queryset = CheckActionLog.objects.all()
     serializer_class = CheckActionLogSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class CheckReceiverViewSet(viewsets.ModelViewSet):
+    serializer_class = CheckReceiverSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return CheckReceiver.objects.none()
+        if user.is_superuser:
+            return CheckReceiver.objects.all()
+        return CheckReceiver.objects.filter(organization__in=user.organizations.all())
+
+    def perform_create(self, serializer):
+        serializer.save(organization=self.request.user.get_current_organization())
+
+    @action(methods=["post"], detail=True)
+    def regenerate_secret(self, request, pk=None):
+        receiver = self.get_object()
+        secret = receiver.generate_secret()
+        return Response(
+            {
+                "id": str(receiver.id),
+                "secret": secret,
+                "webhook_url": build_receiver_webhook_url(receiver, secret, request),
+            }
+        )
+
+    @action(methods=["post"], detail=True)
+    def toggle_enabled(self, request, pk=None):
+        receiver = self.get_object()
+        receiver.enabled = not receiver.enabled
+        receiver.save(update_fields=["enabled", "updated_at"])
+        return Response({"id": str(receiver.id), "enabled": receiver.enabled})
+
+
+class ReceiverEventViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ReceiverEventSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return ReceiverEvent.objects.none()
+        qs = ReceiverEvent.objects.all()
+        if not user.is_superuser:
+            qs = qs.filter(receiver__organization__in=user.organizations.all())
+        receiver_id = self.request.query_params.get("receiver")
+        if receiver_id:
+            qs = qs.filter(receiver_id=receiver_id)
+        disposition = self.request.query_params.get("disposition")
+        if disposition:
+            qs = qs.filter(disposition=disposition)
+        return qs
+
+
+class ReceiverAdmissionDecisionViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ReceiverAdmissionDecisionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return ReceiverAdmissionDecision.objects.none()
+        qs = ReceiverAdmissionDecision.objects.all()
+        if not user.is_superuser:
+            qs = qs.filter(receiver_event__receiver__organization__in=user.organizations.all())
+        receiver_event_id = self.request.query_params.get("receiver_event")
+        if receiver_event_id:
+            qs = qs.filter(receiver_event_id=receiver_event_id)
+        return qs

@@ -38,6 +38,19 @@ class LLMProvider(models.Model):
     )
     model = models.CharField(max_length=255)
     is_default = models.BooleanField(default=False)
+    is_jev = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this provider uses the JEV (/v1/systemone) API "
+            "instead of standard chat completions."
+        ),
+    )
+    is_jev_default = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this provider is the organization's default JEV provider for admission gates."
+        ),
+    )
     enabled = models.BooleanField(default=True)
     config = models.JSONField(
         default=dict,
@@ -60,7 +73,12 @@ class LLMProvider(models.Model):
                 fields=["organization"],
                 condition=models.Q(is_default=True),
                 name="one_default_llm_per_org",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=models.Q(is_jev_default=True),
+                name="one_jev_default_per_org",
+            ),
         ]
 
     @property

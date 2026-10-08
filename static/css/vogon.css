@@ -138,6 +138,15 @@ nav {
   background: var(--color-surface);
 }
 
+.user-menu::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: var(--spacing-xs);
+}
+
 .user-menu:hover .user-dropdown {
   display: flex;
 }
@@ -1241,6 +1250,77 @@ textarea.form-control {
   color: var(--color-text-secondary);
   font-size: 0.75rem;
   text-transform: uppercase;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Page headers */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-lg);
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.page-header h1 {
+  margin-bottom: 0;
+}
+
+/* List cards */
+.list-card {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: box-shadow 0.15s;
+}
+
+.list-card:hover {
+  box-shadow: var(--shadow);
+}
+
+/* Row actions */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+/* Schedule type badges */
+.schedule-badge-event {
+  background: #dbeafe;
+  color: #1e40af;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.schedule-badge-interval,
+.schedule-badge-cron {
+  background: #f3f4f6;
+  color: #374151;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Link in tables */
+.data-table a {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.data-table a:hover {
+  text-decoration: underline;
 }
 
 /* Form help text */

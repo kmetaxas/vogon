@@ -643,6 +643,100 @@ async def call_llm(
 
 
 @activity.defn
+async def evaluate_admission_gate(receiver_id: str, receiver_event_id: str) -> dict:
+    _setup_django_models()
+
+    from asgiref.sync import sync_to_async
+    from django.utils import timezone
+
+    from apps.checks.enums import AdmissionDecision, ReceiverDisposition
+    from apps.checks.models import CheckReceiver, ReceiverEvent
+    from services.checks.receivers.admission_gate import AdmissionGateService
+
+    receiver = await sync_to_async(
+        lambda: CheckReceiver.objects.select_related(
+            "check", "organization", "admission_llm_provider"
+        ).get(id=receiver_id)
+    )()
+    receiver_event = await sync_to_async(
+        lambda: ReceiverEvent.objects.select_related("receiver", "check").get(id=receiver_event_id)
+    )()
+
+    decision = await AdmissionGateService.evaluate_async(receiver, receiver_event)
+
+    if decision.decision == AdmissionDecision.START.value:
+        receiver_event.disposition = ReceiverDisposition.ADMISSION_DECIDED.value
+    elif str(decision.decision).startswith("suppress"):
+        receiver_event.disposition = ReceiverDisposition.SUPPRESS_LOW_VALUE.value
+    else:
+        receiver_event.disposition = ReceiverDisposition.FAILED.value
+    receiver_event.decided_at = timezone.now()
+    await sync_to_async(receiver_event.save)(
+        update_fields=["disposition", "decided_at", "updated_at"]
+    )
+
+    return {
+        "decision": decision.decision,
+        "reason": decision.reason,
+        "confidence": decision.confidence,
+        "model": decision.model,
+        "reasoning": decision.reasoning,
+        "timed_out": decision.timed_out,
+        "check_id": str(receiver.check_id),
+    }
+
+
+@activity.defn
+async def create_check_execution(
+    receiver_id: str, receiver_event_id: str, timed_out: bool = False
+) -> dict:
+    _setup_django_models()
+
+    from asgiref.sync import sync_to_async
+
+    from apps.checks.enums import ReceiverDisposition
+    from apps.checks.models import CheckExecution, CheckReceiver, ReceiverEvent
+
+    receiver = await sync_to_async(
+        lambda: CheckReceiver.objects.select_related("check__organization", "organization").get(
+            id=receiver_id
+        )
+    )()
+    receiver_event = await sync_to_async(ReceiverEvent.objects.get)(id=receiver_event_id)
+
+    can_execute = await sync_to_async(CheckExecution.can_execute)(receiver.organization)
+    if not can_execute:
+        receiver_event.disposition = ReceiverDisposition.FAILED.value
+        await sync_to_async(receiver_event.save)(update_fields=["disposition", "updated_at"])
+        return {"id": None, "status": "failed", "reason": "concurrency limit reached"}
+
+    receiver_running = await sync_to_async(
+        lambda: CheckExecution.objects.filter(
+            check=receiver.check,
+            execution_status=CheckExecution.ExecutionStatus.RUNNING,
+        ).count()
+    )()
+    if receiver_running >= receiver.max_active_executions:
+        receiver_event.disposition = ReceiverDisposition.FAILED.value
+        await sync_to_async(receiver_event.save)(update_fields=["disposition", "updated_at"])
+        return {"id": None, "status": "failed", "reason": "receiver active execution limit reached"}
+
+    execution = await sync_to_async(CheckExecution.objects.create)(
+        check=receiver.check,
+        execution_status=CheckExecution.ExecutionStatus.QUEUED,
+        evaluation_result={"timed_out": True} if timed_out else {},
+    )
+
+    receiver_event.check_execution = execution
+    receiver_event.disposition = ReceiverDisposition.STARTED.value
+    await sync_to_async(receiver_event.save)(
+        update_fields=["check_execution", "disposition", "updated_at"]
+    )
+
+    return {"id": str(execution.id), "status": "created"}
+
+
+@activity.defn
 async def execute_llm_tool(
     thread_id: str | None, tool_call: dict, organization_id: str | None = None
 ) -> dict | list:
@@ -1135,6 +1229,7 @@ async def update_check_execution(
     result: dict,
     evidence: dict | list | None = None,
     resolved_targets: dict | None = None,
+    create_if_missing: bool = True,
 ) -> dict:
     """Update or create a CheckExecution record."""
     _setup_django_models()
@@ -1161,6 +1256,18 @@ async def update_check_execution(
     if execution_id:
         try:
             execution = await sync_to_async(CheckExecution.objects.get)(id=execution_id)
+            # Idempotent: if already RUNNING and trying to set RUNNING, no-op
+            if (
+                execution.execution_status == CheckExecution.ExecutionStatus.RUNNING
+                and status_enum == CheckExecution.ExecutionStatus.RUNNING
+            ):
+                return {"id": str(execution.id), "status": status, "health_state": health_state}
+            # If QUEUED -> RUNNING, update started_at
+            if status_enum == CheckExecution.ExecutionStatus.RUNNING:
+                if execution.execution_status == CheckExecution.ExecutionStatus.QUEUED:
+                    execution.started_at = now
+                elif not execution.started_at:
+                    execution.started_at = now
             execution.execution_status = status_enum
             execution.health_state = health_enum
             execution.evaluation_result = result
@@ -1171,8 +1278,6 @@ async def update_check_execution(
             execution.input_tokens = result.get("input_tokens", execution.input_tokens)
             execution.output_tokens = result.get("output_tokens", execution.output_tokens)
             execution.cost = Decimal(result.get("cost", str(execution.cost)))
-            if status_enum == CheckExecution.ExecutionStatus.RUNNING and not execution.started_at:
-                execution.started_at = now
             if status_enum in terminal_statuses:
                 if not execution.started_at:
                     execution.started_at = now
@@ -1180,7 +1285,13 @@ async def update_check_execution(
             await sync_to_async(execution.save)()
             return {"id": str(execution.id), "status": status, "health_state": health_state}
         except CheckExecution.DoesNotExist:
-            pass
+            if not create_if_missing:
+                return {
+                    "id": execution_id,
+                    "status": status,
+                    "health_state": health_state,
+                    "error": "CheckExecution not found",
+                }
 
     try:
         check = await sync_to_async(Check.objects.get)(id=check_id)

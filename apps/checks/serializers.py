@@ -6,9 +6,20 @@ from apps.checks.models import (
     Check,
     CheckActionLog,
     CheckExecution,
+    CheckReceiver,
     CheckVersion,
+    ReceiverAdmissionDecision,
+    ReceiverEvent,
     normalize_execution_budget,
 )
+from apps.llm.models import LLMProvider
+
+
+def build_receiver_webhook_url(receiver, secret, request=None):
+    path = f"/api/check-receivers/{receiver.id}/{secret}/"
+    if request is not None:
+        return request.build_absolute_uri(path)
+    return path
 
 
 class CheckSerializer(serializers.ModelSerializer):
@@ -65,12 +76,13 @@ class CheckSerializer(serializers.ModelSerializer):
             getattr(self.instance, "schedule_type", None),
         )
 
-        if schedule_expression is None or not str(schedule_expression).strip():
+        expression = "" if schedule_expression is None else str(schedule_expression).strip()
+
+        if schedule_type == Check.ScheduleType.EVENT:
+            pass
+        elif not expression:
             raise serializers.ValidationError("Schedule expression cannot be empty.")
-
-        expression = str(schedule_expression).strip()
-
-        if schedule_type == Check.ScheduleType.CRON:
+        elif schedule_type == Check.ScheduleType.CRON:
             if not croniter.is_valid(expression):
                 raise serializers.ValidationError(f"Invalid cron expression: {expression}")
         elif schedule_type == Check.ScheduleType.INTERVAL:
@@ -158,3 +170,151 @@ class CheckActionLogSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "created_at", "check_name"]
+
+
+class CheckReceiverSerializer(serializers.ModelSerializer):
+    check_name = serializers.CharField(source="check.name", read_only=True)
+    secret = serializers.SerializerMethodField()
+    webhook_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CheckReceiver
+        fields = [
+            "id",
+            "organization",
+            "check",
+            "check_name",
+            "name",
+            "source_type",
+            "enabled",
+            "admission_mode",
+            "admission_llm_provider",
+            "gating_prompt",
+            "max_active_executions",
+            "dedup_window_seconds",
+            "fail_open_on_timeout",
+            "secret",
+            "webhook_url",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "check_name", "secret", "webhook_url", "created_at", "updated_at"]
+        extra_kwargs = {
+            "source_type": {"default": "alertmanager"},
+            "organization": {"required": False},
+        }
+
+    def get_secret(self, obj):
+        return getattr(obj, "_plaintext_secret", None)
+
+    def get_webhook_url(self, obj):
+        secret = getattr(obj, "_plaintext_secret", None)
+        if not secret:
+            return None
+        return build_receiver_webhook_url(obj, secret, self.context.get("request"))
+
+    def _resolve_organization(self, attrs):
+        organization = attrs.get("organization")
+        if organization is None and self.instance is not None:
+            organization = self.instance.organization
+        if organization is None:
+            request = self.context.get("request")
+            if request is not None and request.user.is_authenticated:
+                organization = request.user.get_current_organization()
+        return organization
+
+    def validate(self, attrs):
+        organization = self._resolve_organization(attrs)
+        check = attrs.get("check", getattr(self.instance, "check", None))
+        if (
+            check is not None
+            and organization is not None
+            and check.organization_id != organization.id
+        ):
+            raise serializers.ValidationError(
+                {"check": "Check must belong to the same organization as the receiver."}
+            )
+
+        provider = attrs.get(
+            "admission_llm_provider",
+            getattr(self.instance, "admission_llm_provider", None),
+        )
+        if (
+            provider is not None
+            and organization is not None
+            and provider.organization_id != organization.id
+        ):
+            raise serializers.ValidationError(
+                {
+                    "admission_llm_provider": (
+                        "LLM provider must belong to the same organization as the receiver."
+                    )
+                }
+            )
+
+        admission_mode = attrs.get(
+            "admission_mode",
+            getattr(self.instance, "admission_mode", None),
+        )
+        if admission_mode == "ai_gated":
+            if not provider or not getattr(provider, "is_jev", False):
+                has_jev_default = LLMProvider.objects.filter(
+                    organization=organization,
+                    enabled=True,
+                    is_jev=True,
+                    is_jev_default=True,
+                ).exists()
+                if not has_jev_default:
+                    raise serializers.ValidationError(
+                        {
+                            "admission_llm_provider": (
+                                "AI Gated mode requires a JEV provider or a JEV default "
+                                "must be set for the organization."
+                            )
+                        }
+                    )
+
+        return attrs
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        instance._plaintext_secret = instance.generate_secret()
+        return instance
+
+
+class ReceiverEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiverEvent
+        fields = [
+            "id",
+            "receiver",
+            "check",
+            "external_fingerprint",
+            "source_type",
+            "status",
+            "disposition",
+            "related_event",
+            "check_execution",
+            "received_at",
+            "decided_at",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ReceiverAdmissionDecisionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReceiverAdmissionDecision
+        fields = [
+            "id",
+            "receiver_event",
+            "decision",
+            "reason",
+            "model",
+            "confidence",
+            "candidate_investigations",
+            "timed_out",
+            "reasoning",
+            "created_at",
+        ]
+        read_only_fields = fields
