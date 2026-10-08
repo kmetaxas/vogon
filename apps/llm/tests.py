@@ -116,7 +116,7 @@ class LLMRegistryTests(TestCase):
 
     @patch("services.llm.jev_client.JEVClient")
     @patch("services.llm.registry.OpenAICompatibleClient")
-    def test_get_llm_client_detects_jev_endpoint_by_url(self, mock_openai, mock_jev):
+    def test_get_llm_client_uses_is_jev_field(self, mock_openai, mock_jev):
         from services.llm.registry import get_llm_client
 
         org = Organization.objects.create(name="JEV", slug="jev")
@@ -127,6 +127,7 @@ class LLMRegistryTests(TestCase):
             base_url="http://ollama:11434/v1/systemone",
             model="nimble",
             is_default=True,
+            is_jev=True,
         )
 
         client = get_llm_client(organization_id=str(org.id))
@@ -140,49 +141,25 @@ class LLMRegistryTests(TestCase):
 
     @patch("services.llm.jev_client.JEVClient")
     @patch("services.llm.registry.OpenAICompatibleClient")
-    def test_get_llm_client_detects_systemone_without_v1_prefix(self, mock_openai, mock_jev):
+    def test_get_llm_client_non_jev_url_without_is_jev(self, mock_openai, mock_jev):
         from services.llm.registry import get_llm_client
 
-        org = Organization.objects.create(name="JEV2", slug="jev2")
+        org = Organization.objects.create(name="NonJEV", slug="non-jev")
         LLMProvider.objects.create(
             organization=org,
-            name="JEV Provider",
+            name="Non JEV Provider",
             provider_type=LLMProvider.ProviderType.OLLAMA,
-            base_url="http://ollama:11434/systemone",
+            base_url="http://ollama:11434/v1/systemone",
             model="nimble",
             is_default=True,
+            is_jev=False,
         )
 
         client = get_llm_client(organization_id=str(org.id))
 
-        mock_jev.assert_called_once()
-        call_kwargs = mock_jev.call_args.kwargs
-        self.assertEqual(call_kwargs["base_url"], "http://ollama:11434")
-        mock_openai.assert_not_called()
-        self.assertIs(client, mock_jev.return_value)
-
-    @patch("services.llm.jev_client.JEVClient")
-    @patch("services.llm.registry.OpenAICompatibleClient")
-    def test_get_llm_client_detects_jev_in_middle_of_url(self, mock_openai, mock_jev):
-        from services.llm.registry import get_llm_client
-
-        org = Organization.objects.create(name="JEV3", slug="jev3")
-        LLMProvider.objects.create(
-            organization=org,
-            name="JEV Provider",
-            provider_type=LLMProvider.ProviderType.OLLAMA,
-            base_url="http://ollama:11434/v1/systemone/extra",
-            model="nimble",
-            is_default=True,
-        )
-
-        client = get_llm_client(organization_id=str(org.id))
-
-        mock_jev.assert_called_once()
-        call_kwargs = mock_jev.call_args.kwargs
-        self.assertEqual(call_kwargs["base_url"], "http://ollama:11434")
-        mock_openai.assert_not_called()
-        self.assertIs(client, mock_jev.return_value)
+        mock_jev.assert_not_called()
+        mock_openai.assert_called_once()
+        self.assertIs(client, mock_openai.return_value)
 
     @patch("services.llm.jev_client.JEVClient")
     @patch("services.llm.registry.OpenAICompatibleClient")
@@ -196,6 +173,7 @@ class LLMRegistryTests(TestCase):
             provider_type=LLMProvider.ProviderType.OLLAMA,
             base_url="http://jev:11434/v1/systemone",
             model="nimble",
+            is_jev=True,
         )
         LLMProvider.objects.create(
             organization=org,

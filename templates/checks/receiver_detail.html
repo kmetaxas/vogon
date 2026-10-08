@@ -33,7 +33,13 @@
         <p><strong>Source:</strong> {{ receiver.source_type }}</p>
         <p><strong>Enabled:</strong> {% if receiver.enabled %}Yes{% else %}No{% endif %}</p>
         <p><strong>Admission Mode:</strong> {{ receiver.get_admission_mode_display }}</p>
-        <p><strong>Admission LLM Provider:</strong> {{ receiver.admission_llm_provider.name|default:"Organization Default" }}</p>
+        <p><strong>Admission LLM Provider:</strong> 
+            {% if receiver.admission_llm_provider %}
+                {{ receiver.admission_llm_provider.name }}
+            {% else %}
+                Organization JEV Default
+            {% endif %}
+        </p>
         <p><strong>Webhook URL:</strong> /api/check-receivers/{{ receiver.id }}/&lt;SECRET&gt;/</p>
     </div>
     <div class="card">

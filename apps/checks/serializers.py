@@ -12,6 +12,7 @@ from apps.checks.models import (
     ReceiverEvent,
     normalize_execution_budget,
 )
+from apps.llm.models import LLMProvider
 
 
 def build_receiver_webhook_url(receiver, secret, request=None):
@@ -250,6 +251,28 @@ class CheckReceiverSerializer(serializers.ModelSerializer):
                     )
                 }
             )
+
+        admission_mode = attrs.get(
+            "admission_mode",
+            getattr(self.instance, "admission_mode", None),
+        )
+        if admission_mode == "ai_gated":
+            if not provider or not getattr(provider, "is_jev", False):
+                has_jev_default = LLMProvider.objects.filter(
+                    organization=organization,
+                    enabled=True,
+                    is_jev=True,
+                    is_jev_default=True,
+                ).exists()
+                if not has_jev_default:
+                    raise serializers.ValidationError(
+                        {
+                            "admission_llm_provider": (
+                                "AI Gated mode requires a JEV provider or a JEV default "
+                                "must be set for the organization."
+                            )
+                        }
+                    )
 
         return attrs
 

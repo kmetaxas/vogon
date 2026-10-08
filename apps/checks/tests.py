@@ -2465,6 +2465,139 @@ class AdmissionGateServiceTests(TestCase):
         self.assertTrue(decision.timed_out)
         self.assertEqual(decision.reason, "Admission gate timed out / failed — fail-open")
 
+    @patch("services.checks.receivers.admission_gate.call_llm", new_callable=AsyncMock)
+    def test_admission_gate_empty_content_treated_as_timeout(self, mock_call_llm):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        receiver = self._receiver()
+        event = self._receiver_event(receiver)
+        mock_call_llm.return_value = {"content": "", "model": "admission-model"}
+
+        decision = AdmissionGateService.evaluate(receiver, event, event_context=event)
+
+        self.assertEqual(decision.decision, AdmissionDecision.START)
+        self.assertTrue(decision.timed_out)
+        self.assertEqual(decision.reason, "Admission gate timed out / failed — fail-open")
+
+    @patch("services.checks.receivers.admission_gate.call_llm", new_callable=AsyncMock)
+    def test_admission_gate_whitespace_only_content_treated_as_timeout(self, mock_call_llm):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        receiver = self._receiver()
+        event = self._receiver_event(receiver)
+        mock_call_llm.return_value = {"content": "   \n  ", "model": "admission-model"}
+
+        decision = AdmissionGateService.evaluate(receiver, event, event_context=event)
+
+        self.assertEqual(decision.decision, AdmissionDecision.START)
+        self.assertTrue(decision.timed_out)
+        self.assertEqual(decision.reason, "Admission gate timed out / failed — fail-open")
+
+
+class AdmissionGateJevDefaultTests(TestCase):
+    def setUp(self):
+        from apps.llm.models import LLMProvider
+
+        self.organization = Organization.objects.create(
+            name="JEV Default Org", slug=f"jev-default-org-{uuid.uuid4().hex[:8]}"
+        )
+        self.check = _make_check(
+            self.organization,
+            name="JEV Default Check",
+            schedule_type=Check.ScheduleType.EVENT,
+            schedule_expression="",
+        )
+        self.jev_default = LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV Default Provider",
+            model="jev-default-model",
+            is_jev=True,
+            is_jev_default=True,
+        )
+
+    def _receiver(self, **kwargs):
+        defaults = {
+            "organization": self.organization,
+            "check": self.check,
+            "name": "JEV Default Receiver",
+            "admission_mode": AdmissionMode.AI_GATED,
+            "admission_llm_provider": None,
+        }
+        defaults.update(kwargs)
+        return CheckReceiver.objects.create(**defaults)
+
+    def _receiver_event(self, receiver):
+        return ReceiverEvent.objects.create(
+            receiver=receiver,
+            check=self.check,
+            external_fingerprint="jev-default-fp",
+            source_type="alertmanager",
+            status=ReceiverEvent.Status.FIRING,
+            normalized_payload={
+                "labels": {"severity": "critical", "service": "api"},
+                "annotations": {"summary": "API latency is high"},
+            },
+        )
+
+    def test_model_name_falls_back_to_jev_default(self):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        receiver = self._receiver()
+
+        self.assertEqual(AdmissionGateService._model_name(receiver), "jev-default-model")
+
+    def test_model_name_returns_unknown_without_jev_default(self):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        self.jev_default.is_jev_default = False
+        self.jev_default.save()
+        receiver = self._receiver()
+
+        self.assertEqual(
+            AdmissionGateService._model_name(receiver),
+            "unknown (no JEV provider configured)",
+        )
+
+    def test_resolve_provider_id_falls_back_to_jev_default(self):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        receiver = self._receiver()
+
+        self.assertEqual(AdmissionGateService._resolve_provider_id(receiver), self.jev_default.id)
+
+    def test_resolve_provider_id_prefers_explicit_provider(self):
+        from apps.llm.models import LLMProvider
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        explicit = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Explicit JEV",
+            model="explicit-model",
+            is_jev=True,
+        )
+        receiver = self._receiver(admission_llm_provider=explicit)
+
+        self.assertEqual(AdmissionGateService._resolve_provider_id(receiver), explicit.id)
+
+    @patch("services.checks.receivers.admission_gate.call_llm", new_callable=AsyncMock)
+    def test_evaluate_uses_jev_default_provider_id(self, mock_call_llm):
+        from services.checks.receivers.admission_gate import AdmissionGateService
+
+        receiver = self._receiver()
+        event = self._receiver_event(receiver)
+        mock_call_llm.return_value = {
+            "content": '{"decision":"START","reason":"worth it","confidence":0.8}',
+            "model": "jev-default-model",
+        }
+
+        decision = AdmissionGateService.evaluate(receiver, event, event_context=event)
+
+        self.assertEqual(decision.decision, AdmissionDecision.START)
+        mock_call_llm.assert_awaited_once()
+        self.assertEqual(
+            mock_call_llm.await_args.kwargs["llm_provider_id"], str(self.jev_default.id)
+        )
+
 
 class AlertmanagerAdapterTests(TestCase):
     def test_alertmanager_adapter_parse_two_alerts(self):
@@ -2705,6 +2838,65 @@ class CheckReceiverSerializerTests(TestCase):
             data=self._receiver_payload(admission_llm_provider=str(provider.id))
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_check_receiver_serializer_rejects_ai_gated_without_jev_provider(self):
+        from apps.checks.serializers import CheckReceiverSerializer
+
+        provider = self.LLMProvider.objects.create(
+            organization=self.organization,
+            name="Non-JEV Provider",
+            model="local-model",
+            is_jev=False,
+        )
+        serializer = CheckReceiverSerializer(
+            data=self._receiver_payload(
+                admission_mode=AdmissionMode.AI_GATED,
+                admission_llm_provider=str(provider.id),
+            )
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("admission_llm_provider", serializer.errors)
+
+    def test_check_receiver_serializer_accepts_ai_gated_with_jev_provider(self):
+        from apps.checks.serializers import CheckReceiverSerializer
+
+        provider = self.LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV Provider",
+            model="jev-model",
+            is_jev=True,
+        )
+        serializer = CheckReceiverSerializer(
+            data=self._receiver_payload(
+                admission_mode=AdmissionMode.AI_GATED,
+                admission_llm_provider=str(provider.id),
+            )
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_check_receiver_serializer_accepts_ai_gated_without_provider_when_jev_default(self):
+        from apps.checks.serializers import CheckReceiverSerializer
+
+        self.LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV Default Provider",
+            model="jev-default-model",
+            is_jev=True,
+            is_jev_default=True,
+        )
+        serializer = CheckReceiverSerializer(
+            data=self._receiver_payload(admission_mode=AdmissionMode.AI_GATED)
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_check_receiver_serializer_rejects_ai_gated_without_provider_or_jev_default(self):
+        from apps.checks.serializers import CheckReceiverSerializer
+
+        serializer = CheckReceiverSerializer(
+            data=self._receiver_payload(admission_mode=AdmissionMode.AI_GATED)
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("admission_llm_provider", serializer.errors)
 
     def test_receiver_event_serializer_is_read_only(self):
         from apps.checks.serializers import ReceiverEventSerializer
@@ -3651,15 +3843,15 @@ class ReceiverAdmissionWorkflowTests(SimpleTestCase):
                 {"id": "execution-1", "status": "created"},
             ]
         )
-        start_child = AsyncMock()
+        execute_child = AsyncMock()
 
         with (
             patch(
                 "services.temporal_workers.workflows.workflow.execute_activity", execute_activity
             ),
             patch(
-                "services.temporal_workers.workflows.workflow.start_child_workflow",
-                start_child,
+                "services.temporal_workers.workflows.workflow.execute_child_workflow",
+                execute_child,
                 create=True,
             ),
         ):
@@ -3670,7 +3862,44 @@ class ReceiverAdmissionWorkflowTests(SimpleTestCase):
         self.assertEqual(result["reasoning"], "new outage")
         activity_names = [call.args[0] for call in execute_activity.await_args_list]
         self.assertEqual(activity_names, ["evaluate_admission_gate", "create_check_execution"])
-        start_child.assert_awaited_once()
+        execute_child.assert_awaited_once()
+
+    def test_start_decision_passes_timed_out_to_create_execution(self):
+        from services.temporal_workers.workflows import ReceiverAdmissionWorkflow
+
+        workflow_instance = ReceiverAdmissionWorkflow()
+        execute_activity = AsyncMock(
+            side_effect=[
+                {
+                    "decision": "start",
+                    "reason": "actionable",
+                    "confidence": 0.8,
+                    "model": "nimble",
+                    "reasoning": "new outage",
+                    "timed_out": True,
+                    "check_id": "check-1",
+                },
+                {"id": "execution-1", "status": "created"},
+            ]
+        )
+        execute_child = AsyncMock()
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity", execute_activity
+            ),
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_child_workflow",
+                execute_child,
+                create=True,
+            ),
+        ):
+            result = asyncio.run(workflow_instance.run("receiver-1", "event-1"))
+
+        self.assertEqual(result["status"], "dispatched")
+        create_call = execute_activity.await_args_list[1]
+        self.assertEqual(create_call.args[0], "create_check_execution")
+        self.assertEqual(create_call.kwargs["args"], ["receiver-1", "event-1", True])
 
     def test_suppress_decision_does_not_start_child_workflow(self):
         from services.temporal_workers.workflows import ReceiverAdmissionWorkflow
@@ -3687,15 +3916,15 @@ class ReceiverAdmissionWorkflowTests(SimpleTestCase):
                 "check_id": "check-1",
             }
         )
-        start_child = AsyncMock()
+        execute_child = AsyncMock()
 
         with (
             patch(
                 "services.temporal_workers.workflows.workflow.execute_activity", execute_activity
             ),
             patch(
-                "services.temporal_workers.workflows.workflow.start_child_workflow",
-                start_child,
+                "services.temporal_workers.workflows.workflow.execute_child_workflow",
+                execute_child,
                 create=True,
             ),
         ):
@@ -3704,7 +3933,7 @@ class ReceiverAdmissionWorkflowTests(SimpleTestCase):
         self.assertEqual(result["status"], "suppressed")
         self.assertEqual(result["decision"], "suppress_low_value")
         execute_activity.assert_awaited_once()
-        start_child.assert_not_called()
+        execute_child.assert_not_called()
 
 
 class UpdateCheckExecutionIdempotentTests(TransactionTestCase):
@@ -4170,3 +4399,50 @@ class CheckReceiverUIViewTests(TestCase):
         )
         response = self.client.get(f"/checks/receivers/{other_receiver.id}/")
         self.assertEqual(response.status_code, 404)
+
+    def test_receiver_create_view_filters_providers_to_jev(self):
+        from apps.llm.models import LLMProvider
+
+        jev = LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="jev-model",
+            is_jev=True,
+        )
+        non_jev = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Standard Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="std-model",
+            is_jev=False,
+        )
+        response = self.client.get("/checks/receivers/new/")
+        self.assertEqual(response.status_code, 200)
+        providers = response.context["llm_providers"]
+        self.assertIn(jev, providers)
+        self.assertNotIn(non_jev, providers)
+
+    def test_receiver_edit_view_filters_providers_to_jev(self):
+        from apps.llm.models import LLMProvider
+
+        jev = LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="jev-model",
+            is_jev=True,
+        )
+        non_jev = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Standard Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="std-model",
+            is_jev=False,
+        )
+        receiver = self._make_receiver(name="Edit Filter")
+        response = self.client.get(f"/checks/receivers/{receiver.id}/edit/")
+        self.assertEqual(response.status_code, 200)
+        providers = response.context["llm_providers"]
+        self.assertIn(jev, providers)
+        self.assertNotIn(non_jev, providers)

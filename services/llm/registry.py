@@ -4,11 +4,9 @@ from services.llm.base import LLMClient
 from services.llm.openai_compat import OpenAICompatibleClient
 
 
-def _is_jev_endpoint(base_url: str | None) -> bool:
-    """Detect whether a base URL points to a JEV (/v1/systemone) endpoint."""
-    if not base_url:
-        return False
-    return "/systemone" in base_url
+def _is_jev_provider(provider) -> bool:
+    """Check whether a provider uses the JEV API."""
+    return getattr(provider, "is_jev", False)
 
 
 def _jev_base_url(base_url: str) -> str:
@@ -47,7 +45,7 @@ def get_llm_client(organization_id: str | None = None, provider_id: str | None =
 
     if provider is None:
         base_url = settings.LLM_BASE_URL
-        if _is_jev_endpoint(base_url):
+        if "/systemone" in (base_url or ""):
             from services.llm.jev_client import JEVClient
 
             return JEVClient(
@@ -65,7 +63,7 @@ def get_llm_client(organization_id: str | None = None, provider_id: str | None =
         )
 
     base_url = provider.base_url or settings.LLM_BASE_URL
-    if _is_jev_endpoint(base_url):
+    if _is_jev_provider(provider):
         from services.llm.jev_client import JEVClient
 
         return JEVClient(

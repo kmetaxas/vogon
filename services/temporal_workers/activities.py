@@ -687,7 +687,9 @@ async def evaluate_admission_gate(receiver_id: str, receiver_event_id: str) -> d
 
 
 @activity.defn
-async def create_check_execution(receiver_id: str, receiver_event_id: str) -> dict:
+async def create_check_execution(
+    receiver_id: str, receiver_event_id: str, timed_out: bool = False
+) -> dict:
     _setup_django_models()
 
     from asgiref.sync import sync_to_async
@@ -722,6 +724,7 @@ async def create_check_execution(receiver_id: str, receiver_event_id: str) -> di
     execution = await sync_to_async(CheckExecution.objects.create)(
         check=receiver.check,
         execution_status=CheckExecution.ExecutionStatus.QUEUED,
+        evaluation_result={"timed_out": True} if timed_out else {},
     )
 
     receiver_event.check_execution = execution

@@ -1119,7 +1119,7 @@ class ReceiverAdmissionWorkflow:
             self.state["status"] = "starting_execution"
             execution = await workflow.execute_activity(
                 "create_check_execution",
-                args=[receiver_id, receiver_event_id],
+                args=[receiver_id, receiver_event_id, self.state["timed_out"]],
                 start_to_close_timeout=timedelta(seconds=30),
             )
             self.state["execution_id"] = execution.get("id")
@@ -1128,7 +1128,7 @@ class ReceiverAdmissionWorkflow:
                 self.state["reason"] = execution.get("reason", self.state.get("reason"))
                 return self.state
 
-            await workflow.start_child_workflow(  # type: ignore[attr-defined]
+            await workflow.execute_child_workflow(
                 AutonomousInvestigationWorkflow.run,
                 id=f"check-{result.get('check_id')}-receiver-{receiver_event_id}",
                 args=[result.get("check_id"), None, False, None, execution.get("id")],

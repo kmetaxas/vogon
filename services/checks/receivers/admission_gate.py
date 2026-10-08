@@ -224,7 +224,7 @@ class AdmissionGateService:
             system_msg = (
                 str(receiver.gating_prompt).strip() if receiver.gating_prompt else SYSTEM_PROMPT
             )
-            receiver_provider_id = getattr(receiver, "admission_llm_provider_id", None)
+            receiver_provider_id = await sync_to_async(cls._resolve_provider_id)(receiver)
             provider_id = str(receiver_provider_id) if receiver_provider_id else None
 
             response = await asyncio.wait_for(
@@ -246,6 +246,13 @@ class AdmissionGateService:
                 str(response.get("model") or model_name)
                 if isinstance(response, Mapping)
                 else model_name
+            )
+            logger.info(
+                "Admission gate evaluating with provider model=%s, provider_id=%s, "
+                "content_length=%d",
+                model_name,
+                provider_id,
+                len(content),
             )
             parsed = cls._parse_response(content)
         except Exception:
@@ -269,8 +276,51 @@ class AdmissionGateService:
 
     @classmethod
     def _parse_response(cls, content: str) -> dict[str, Any]:
-        match = re.search(r'\{.*"decision".*\}', content, re.DOTALL)
-        payload = json.loads(match.group(0) if match else content)
+        if not content or not content.strip():
+            raise ValueError("Empty admission gate response")
+
+        # Try to extract JSON from the content
+        payload = None
+
+        # Strategy 1: Try to parse the whole content as JSON
+        try:
+            payload = json.loads(content)
+            if isinstance(payload, dict):
+                logger.debug("Parsed JSON from full content")
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Strategy 2: Try to find JSON block with regex
+        if payload is None:
+            match = re.search(r'\{.*"decision".*\}', content, re.DOTALL)
+            if match:
+                try:
+                    payload = json.loads(match.group(0))
+                    if isinstance(payload, dict):
+                        logger.debug("Parsed JSON from regex match")
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+        # Strategy 3: Try to extract from markdown code blocks
+        if payload is None:
+            code_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", content, re.DOTALL)
+            if code_match:
+                try:
+                    payload = json.loads(code_match.group(1))
+                    if isinstance(payload, dict):
+                        logger.debug("Parsed JSON from markdown code block")
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+        if payload is None:
+            # Log the actual content for debugging (truncated)
+            preview = content[:500].replace("\n", " ")
+            logger.warning(
+                "Could not parse admission gate response as JSON. Content preview: %s",
+                preview,
+            )
+            raise ValueError(f"Could not parse JSON from content: {preview[:200]}...")
+
         if not isinstance(payload, dict):
             raise ValueError("Admission gate response must be a JSON object")
 
@@ -366,12 +416,43 @@ class AdmissionGateService:
         raise ValueError("AdmissionGateService requires a ReceiverEvent in event_context")
 
     @staticmethod
+    def _resolve_provider_id(receiver: CheckReceiver) -> Any:
+        provider_id = getattr(receiver, "admission_llm_provider_id", None)
+        if provider_id or receiver.admission_mode != AdmissionMode.AI_GATED:
+            return provider_id
+        return (
+            LLMProvider.objects.filter(  # type: ignore[attr-defined]
+                organization=receiver.organization,
+                enabled=True,
+                is_jev=True,
+                is_jev_default=True,
+            )
+            .values_list("id", flat=True)
+            .first()
+        )
+
+    @staticmethod
     def _model_name(receiver: CheckReceiver) -> str:
         provider = cast(LLMProvider | None, getattr(receiver, "admission_llm_provider", None))
-        if provider is None:
-            provider = (
-                LLMProvider.objects.filter(organization=receiver.organization, enabled=True)  # type: ignore[attr-defined]
-                .order_by("-is_default")
-                .first()
-            )
-        return cast(str, provider.model) if provider else ""
+        if provider is not None:
+            return cast(str, provider.model)
+
+        # Fall back to org JEV default for AI_GATED mode
+        if receiver.admission_mode == AdmissionMode.AI_GATED:
+            jev_default = LLMProvider.objects.filter(  # type: ignore[attr-defined]
+                organization=receiver.organization,
+                enabled=True,
+                is_jev=True,
+                is_jev_default=True,
+            ).first()
+            if jev_default:
+                return cast(str, jev_default.model)
+            return "unknown (no JEV provider configured)"
+
+        # For ALWAYS mode, return org default (non-JEV)
+        org_default = (
+            LLMProvider.objects.filter(organization=receiver.organization, enabled=True)  # type: ignore[attr-defined]
+            .order_by("-is_default")
+            .first()
+        )
+        return cast(str, org_default.model) if org_default else "unknown"

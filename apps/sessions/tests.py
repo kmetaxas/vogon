@@ -264,6 +264,66 @@ class SessionViewTests(TestCase):
         self.assertIn("llm_providers", response.context)
         self.assertEqual(len(response.context["llm_providers"]), 1)
 
+    def test_session_detail_excludes_jev_providers(self):
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="JEV Filter",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        Thread.objects.create(tsession=session, user=self.user)
+        LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="jev-model",
+            is_jev=True,
+        )
+        LLMProvider.objects.create(
+            organization=self.organization,
+            name="Standard",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="std-model",
+            is_jev=False,
+        )
+
+        response = self.client.get(
+            reverse("sessions:session-detail", kwargs={"session_id": session.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        providers = response.context["llm_providers"]
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0].name, "Standard")
+
+    def test_resolved_provider_excludes_jev_when_session_provider_is_jev(self):
+        from apps.sessions.views import _resolved_provider
+
+        jev_provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="JEV",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="jev-model",
+            is_jev=True,
+        )
+        standard_provider = LLMProvider.objects.create(
+            organization=self.organization,
+            name="Standard",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            model="std-model",
+            is_default=True,
+            is_jev=False,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Resolve Test",
+            created_by=self.user,
+            llm_provider=jev_provider,
+        )
+
+        resolved = _resolved_provider(session)
+        self.assertEqual(resolved, standard_provider)
+
     def test_session_status_view_renders_badge_partial(self):
         session = TSession.objects.create(
             organization=self.organization,

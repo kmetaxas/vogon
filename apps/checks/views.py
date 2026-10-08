@@ -286,7 +286,7 @@ class ReceiverCreateView(OrganizationRequiredMixin, View):
             "organization": self.organization,
             "checks": Check.objects.filter(organization=self.organization),
             "llm_providers": LLMProvider.objects.filter(
-                organization=self.organization, enabled=True
+                organization=self.organization, enabled=True, is_jev=True
             ).order_by("name"),
         }
         return render(request, "checks/receiver_form.html", context)
@@ -343,7 +343,7 @@ class ReceiverEditView(OrganizationRequiredMixin, View):
             "organization": self.organization,
             "checks": Check.objects.filter(organization=self.organization),
             "llm_providers": LLMProvider.objects.filter(
-                organization=self.organization, enabled=True
+                organization=self.organization, enabled=True, is_jev=True
             ).order_by("name"),
         }
         return render(request, "checks/receiver_form.html", context)
