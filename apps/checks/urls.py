@@ -9,6 +9,13 @@ from apps.checks.views import (
     CheckListView,
     CheckToggleView,
     CheckTriggerView,
+    ReceiverCreateView,
+    ReceiverDeleteView,
+    ReceiverDetailView,
+    ReceiverEditView,
+    ReceiverListView,
+    ReceiverRegenerateSecretView,
+    ReceiverToggleEnabledView,
 )
 
 app_name = "checks"
@@ -26,4 +33,21 @@ urlpatterns = [
         name="check-execution-detail",
     ),
     path("new/", CheckCreateView.as_view(), name="check-create"),
+    path("receivers/", ReceiverListView.as_view(), name="receiver-list"),
+    path("receivers/new/", ReceiverCreateView.as_view(), name="receiver-create"),
+    path("receivers/<uuid:receiver_id>/", ReceiverDetailView.as_view(), name="receiver-detail"),
+    path("receivers/<uuid:receiver_id>/edit/", ReceiverEditView.as_view(), name="receiver-edit"),
+    path(
+        "receivers/<uuid:receiver_id>/delete/", ReceiverDeleteView.as_view(), name="receiver-delete"
+    ),
+    path(
+        "receivers/<uuid:receiver_id>/regenerate-secret/",
+        ReceiverRegenerateSecretView.as_view(),
+        name="receiver-regenerate-secret",
+    ),
+    path(
+        "receivers/<uuid:receiver_id>/toggle/",
+        ReceiverToggleEnabledView.as_view(),
+        name="receiver-toggle",
+    ),
 ]

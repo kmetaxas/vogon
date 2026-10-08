@@ -1,6 +1,6 @@
 """Temporal workflows for Vogon troubleshooting sessions."""
 
-# pyright: reportMissingImports=false
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false
 
 import asyncio
 import json
@@ -570,6 +570,7 @@ class AutonomousInvestigationWorkflow:
         version_id: str,
         dry_run: bool = False,
         max_iterations: int | None = None,
+        execution_id: str | None = None,
     ) -> dict:
         workflow.logger.info(f"Starting AutonomousInvestigationWorkflow for check {check_id}")
         self.state["check_id"] = check_id
@@ -592,7 +593,7 @@ class AutonomousInvestigationWorkflow:
 
         execution = await workflow.execute_activity(
             "update_check_execution",
-            args=[check_id, None, "running", "unknown", {}],
+            args=[check_id, execution_id, "running", "unknown", {}],
             start_to_close_timeout=timedelta(seconds=30),
         )
         self.state["execution_id"] = execution.get("id")
@@ -1068,3 +1069,73 @@ class CapabilityExecutionWorkflow:
 
         workflow.logger.info(f"Capability {capability_name} execution completed")
         return result
+
+
+@workflow.defn
+class ReceiverAdmissionWorkflow:
+    def __init__(self) -> None:
+        self.state: dict[str, Any] = {
+            "receiver_id": None,
+            "receiver_event_id": None,
+            "status": "pending",
+            "decision": None,
+            "reason": None,
+            "confidence": None,
+            "model": None,
+            "reasoning": None,
+            "timed_out": False,
+        }
+
+    @workflow.query
+    def get_status(self) -> dict:
+        return self.state
+
+    @workflow.run
+    async def run(self, receiver_id: str, receiver_event_id: str) -> dict:
+        self.state["receiver_id"] = receiver_id
+        self.state["receiver_event_id"] = receiver_event_id
+        self.state["status"] = "evaluating"
+
+        result = await workflow.execute_activity(
+            "evaluate_admission_gate",
+            args=[receiver_id, receiver_event_id],
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=1),
+                maximum_interval=timedelta(seconds=5),
+                maximum_attempts=3,
+            ),
+        )
+
+        self.state["status"] = "decided"
+        self.state["decision"] = result.get("decision")
+        self.state["reason"] = result.get("reason")
+        self.state["confidence"] = result.get("confidence")
+        self.state["model"] = result.get("model")
+        self.state["reasoning"] = result.get("reasoning")
+        self.state["timed_out"] = result.get("timed_out", False)
+
+        if result.get("decision") == "start":
+            self.state["status"] = "starting_execution"
+            execution = await workflow.execute_activity(
+                "create_check_execution",
+                args=[receiver_id, receiver_event_id],
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+            self.state["execution_id"] = execution.get("id")
+            if execution.get("status") == "failed":
+                self.state["status"] = "failed"
+                self.state["reason"] = execution.get("reason", self.state.get("reason"))
+                return self.state
+
+            await workflow.start_child_workflow(  # type: ignore[attr-defined]
+                AutonomousInvestigationWorkflow.run,
+                id=f"check-{result.get('check_id')}-receiver-{receiver_event_id}",
+                args=[result.get("check_id"), None, False, None, execution.get("id")],
+                task_queue="vogon",
+            )
+            self.state["status"] = "dispatched"
+        else:
+            self.state["status"] = "suppressed"
+
+        return self.state

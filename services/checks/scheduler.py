@@ -34,6 +34,9 @@ class CheckScheduler:
         if not check.enabled:
             return {"schedule_id": None, "status": "skipped_disabled"}
 
+        if check.schedule_type == "event":
+            return {"schedule_id": None, "status": "skipped_event_type"}
+
         client: Client = await get_temporal_client()
         schedule_id = cls._schedule_id(str(check.id))
 
@@ -42,6 +45,9 @@ class CheckScheduler:
 
     @classmethod
     async def update_schedule(cls, check) -> dict:
+        if check.schedule_type == "event":
+            return {"schedule_id": None, "status": "skipped_event_type"}
+
         client: Client = await get_temporal_client()
         schedule_id = cls._schedule_id(str(check.id))
 
@@ -102,18 +108,20 @@ class CheckScheduler:
             return {"schedule_id": schedule_id, "status": "error", "error": str(exc)}
 
     @classmethod
-    async def trigger_now(cls, check, dry_run: bool = False) -> dict:
+    async def trigger_now(
+        cls, check, dry_run: bool = False, execution_id: str | None = None
+    ) -> dict:
         client: Client = await get_temporal_client()
         workflow_cls = AutonomousInvestigationWorkflow
         workflow_id = f"check-{check.id}-manual-{datetime.now(UTC).isoformat()}"
 
-        result = await client.execute_workflow(
+        handle = await client.start_workflow(
             workflow_cls.run,
             id=workflow_id,
-            args=[str(check.id), None, dry_run],
+            args=[str(check.id), None, dry_run, None, execution_id],
             task_queue=TASK_QUEUE,
         )
-        return {"workflow_id": result.get("workflow_id", workflow_id), "status": "triggered"}
+        return {"workflow_id": handle.id, "status": "triggered"}
 
     @classmethod
     def _build_schedule(cls, check) -> Schedule:

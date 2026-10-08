@@ -1,5 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportOperatorIssue=false
 
+import hashlib
+import secrets
 import uuid
 from decimal import Decimal
 
@@ -8,6 +10,11 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from pydantic import ValidationError as PydanticValidationError
 
+from apps.checks.enums import (
+    AdmissionDecision,
+    AdmissionMode,
+    ReceiverDisposition,
+)
 from apps.core.models import Organization
 
 
@@ -35,6 +42,7 @@ class Check(models.Model):
     class ScheduleType(models.TextChoices):
         INTERVAL = "interval", "Interval"
         CRON = "cron", "Cron"
+        EVENT = "event", "Event"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
@@ -55,6 +63,7 @@ class Check(models.Model):
     )
     schedule_expression = models.CharField(
         max_length=255,
+        blank=True,
         help_text="e.g. '60' for interval seconds, or '0 9 * * *' for cron",
     )
     timezone = models.CharField(max_length=50, default="UTC")
@@ -116,6 +125,12 @@ class Check(models.Model):
 
         super().clean()
         expression = (self.schedule_expression or "").strip()
+
+        if self.schedule_type == self.ScheduleType.EVENT:
+            if self.execution_budget is not None:
+                self.execution_budget = normalize_execution_budget(self.execution_budget)
+            return
+
         if not expression:
             raise ValidationError("Schedule expression cannot be empty.")
 
@@ -342,3 +357,156 @@ class CheckActionLog(models.Model):
 
     def __str__(self):
         return f"{self.action_type} to {self.recipient} ({self.delivery_status})"
+
+
+class CheckReceiver(models.Model):
+    objects = models.Manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="check_receivers",
+    )
+    check = models.ForeignKey(  # type: ignore[assignment,misc]
+        Check,
+        on_delete=models.CASCADE,
+        related_name="receivers",
+    )
+    name = models.CharField(max_length=255)
+    source_type = models.CharField(max_length=50, default="alertmanager")
+    enabled = models.BooleanField(default=True)
+    secret_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="SHA-256 hash of webhook secret",
+    )
+    admission_mode = models.CharField(
+        max_length=20,
+        choices=AdmissionMode.choices,
+    )
+    admission_llm_provider = models.ForeignKey(
+        "llm.LLMProvider",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="check_receivers",
+    )
+    gating_prompt = models.TextField(blank=True)
+    max_active_executions = models.PositiveIntegerField(default=1)
+    dedup_window_seconds = models.PositiveIntegerField(default=300)
+    fail_open_on_timeout = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.name} ({self.check.name})"
+
+    def generate_secret(self) -> str:
+        secret = f"vogon_{self.organization.slug}_{secrets.token_hex(16)}"
+        self.secret_hash = hashlib.sha256(secret.encode()).hexdigest()
+        self.save(update_fields=["secret_hash"])
+        return secret
+
+    def validate_secret(self, secret: str) -> bool:
+        if not secret or not self.secret_hash:
+            return False
+        secret_hash = hashlib.sha256(secret.encode()).hexdigest()
+        return secrets.compare_digest(secret_hash, str(self.secret_hash))
+
+
+class ReceiverEvent(models.Model):
+    objects = models.Manager()
+
+    class Status(models.TextChoices):
+        FIRING = "firing", "Firing"
+        RESOLVED = "resolved", "Resolved"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    receiver = models.ForeignKey(
+        CheckReceiver,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    check = models.ForeignKey(  # type: ignore[assignment,misc]
+        Check,
+        on_delete=models.CASCADE,
+        related_name="receiver_events",
+    )
+    external_fingerprint = models.CharField(max_length=64, db_index=True)
+    source_type = models.CharField(max_length=50, default="alertmanager")
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+    )
+    raw_payload = models.JSONField(default=dict)
+    normalized_payload = models.JSONField(default=dict)
+    correlation_identity = models.CharField(max_length=500, blank=True)
+    disposition = models.CharField(
+        max_length=30,
+        choices=ReceiverDisposition.choices,
+        default=ReceiverDisposition.RECEIVED,
+    )
+    related_event = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="derived_events",
+    )
+    check_execution = models.ForeignKey(
+        CheckExecution,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="receiver_events",
+    )
+    received_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["receiver", "external_fingerprint"]),
+            models.Index(fields=["receiver", "disposition"]),
+            models.Index(fields=["check_execution"]),
+        ]
+
+    def __str__(self):
+        return f"{self.external_fingerprint} ({self.status})"
+
+
+class ReceiverAdmissionDecision(models.Model):
+    objects = models.Manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    receiver_event = models.ForeignKey(
+        ReceiverEvent,
+        on_delete=models.CASCADE,
+        related_name="admission_decisions",
+    )
+    decision = models.CharField(
+        max_length=30,
+        choices=AdmissionDecision.choices,
+    )
+    reason = models.TextField(blank=True)
+    model = models.CharField(max_length=100, blank=True)
+    confidence = models.FloatField(null=True, blank=True)
+    candidate_investigations = models.JSONField(default=dict)
+    timed_out = models.BooleanField(default=False)
+    reasoning = models.TextField(
+        blank=True,
+        help_text="Model reasoning chain from JEV/reasoning models",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.decision} for {self.receiver_event_id}"

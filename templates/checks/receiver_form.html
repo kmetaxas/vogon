@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{% if receiver %}Edit{% else %}New{% endif %} Receiver{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>{% if receiver %}Edit{% else %}New{% endif %} Receiver</h1>
+    <a href="{% url 'checks:receiver-list' %}" class="btn btn-secondary">Back</a>
+    <div class="card">
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-group"><label>Name</label><input type="text" name="name" class="form-control" value="{{ receiver.name|default:'' }}" required></div>
+            <div class="form-group"><label>Check</label><select name="check_id" class="form-control">{% for c in checks %}<option value="{{ c.id }}" {% if receiver and receiver.check_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+            <div class="form-group"><label>Source Type</label><input type="text" name="source_type" class="form-control" value="{{ receiver.source_type|default:'alertmanager' }}" readonly></div>
+            <div class="form-group"><label>Admission Mode</label><select name="admission_mode" class="form-control"><option value="always" {% if receiver and receiver.admission_mode == 'always' %}selected{% endif %}>Always</option><option value="ai_gated" {% if receiver and receiver.admission_mode == 'ai_gated' %}selected{% endif %}>AI Gated</option></select></div>
+            <div class="form-group"><label>Gating Prompt</label><textarea name="gating_prompt" class="form-control" rows="4">{{ receiver.gating_prompt|default:'' }}</textarea></div>
+            <div class="form-group"><label>Max Active Executions</label><input type="number" name="max_active_executions" class="form-control" value="{{ receiver.max_active_executions|default:'1' }}"></div>
+            <div class="form-group"><label>Dedup Window (seconds)</label><input type="number" name="dedup_window_seconds" class="form-control" value="{{ receiver.dedup_window_seconds|default:'300' }}"></div>
+            <div class="form-group"><label>Fail Open on Timeout</label><input type="checkbox" name="fail_open_on_timeout" {% if not receiver or receiver.fail_open_on_timeout %}checked{% endif %}></div>
+            <button type="submit" class="btn btn-primary">{% if receiver %}Save{% else %}Create{% endif %}</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

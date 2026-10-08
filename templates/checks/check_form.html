@@ -103,6 +103,26 @@
             </script>
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="{% url 'checks:check-list' %}" class="btn btn-secondary">Cancel</a>
+            <script>
+            (function() {
+                var scheduleType = document.querySelector('select[name="schedule_type"]');
+                var scheduleExpression = document.querySelector('input[name="schedule_expression"]');
+                if (!scheduleType || !scheduleExpression) return;
+
+                function toggleScheduleExpression() {
+                    if (scheduleType.value === 'event') {
+                        scheduleExpression.removeAttribute('required');
+                        scheduleExpression.disabled = true;
+                    } else {
+                        scheduleExpression.setAttribute('required', 'required');
+                        scheduleExpression.disabled = false;
+                    }
+                }
+
+                scheduleType.addEventListener('change', toggleScheduleExpression);
+                toggleScheduleExpression();
+            })();
+            </script>
         </form>
     </div>
 </div>
