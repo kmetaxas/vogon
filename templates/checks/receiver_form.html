@@ -11,6 +11,18 @@
             <div class="form-group"><label>Check</label><select name="check_id" class="form-control">{% for c in checks %}<option value="{{ c.id }}" {% if receiver and receiver.check_id == c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
             <div class="form-group"><label>Source Type</label><input type="text" name="source_type" class="form-control" value="{{ receiver.source_type|default:'alertmanager' }}" readonly></div>
             <div class="form-group"><label>Admission Mode</label><select name="admission_mode" class="form-control"><option value="always" {% if receiver and receiver.admission_mode == 'always' %}selected{% endif %}>Always</option><option value="ai_gated" {% if receiver and receiver.admission_mode == 'ai_gated' %}selected{% endif %}>AI Gated</option></select></div>
+            <div class="form-group">
+                <label>Admission LLM Provider</label>
+                <select name="admission_llm_provider" class="form-control">
+                    <option value="">— Use Organization Default —</option>
+                    {% for provider in llm_providers %}
+                    <option value="{{ provider.id }}" {% if receiver and receiver.admission_llm_provider_id == provider.id %}selected{% endif %}>
+                        {{ provider.name }} ({{ provider.model }})
+                    </option>
+                    {% endfor %}
+                </select>
+                <div class="form-help">Select a specific LLM provider for admission gating, or leave blank to use the organization default.</div>
+            </div>
             <div class="form-group"><label>Gating Prompt</label><textarea name="gating_prompt" class="form-control" rows="4">{{ receiver.gating_prompt|default:'' }}</textarea></div>
             <div class="form-group"><label>Max Active Executions</label><input type="number" name="max_active_executions" class="form-control" value="{{ receiver.max_active_executions|default:'1' }}"></div>
             <div class="form-group"><label>Dedup Window (seconds)</label><input type="number" name="dedup_window_seconds" class="form-control" value="{{ receiver.dedup_window_seconds|default:'300' }}"></div>

@@ -176,7 +176,7 @@ class GateContextBuilder:
 
 
 class AdmissionGateService:
-    TIMEOUT_SECONDS = getattr(settings, "ADMISSION_LLM_TIMEOUT_SECONDS", 3)
+    TIMEOUT_SECONDS = getattr(settings, "ADMISSION_LLM_TIMEOUT_SECONDS", 30)
     DECISION_MAP = {
         "START": "start",
         "SUPPRESS_LOW_VALUE": "suppress_low_value",

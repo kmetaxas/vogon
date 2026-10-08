@@ -228,7 +228,11 @@ CHECK_RECEIVER_MAX_PAYLOAD_BYTES = int(
     os.environ.get("CHECK_RECEIVER_MAX_PAYLOAD_BYTES", "1048576")
 )
 CHECK_RECEIVER_RATE_LIMIT = os.environ.get("CHECK_RECEIVER_RATE_LIMIT", "60/m")
-ADMISSION_LLM_TIMEOUT_SECONDS = int(os.environ.get("ADMISSION_LLM_TIMEOUT_SECONDS", "3"))
+# Admission gate timeout. Ollama models may need 10-30s to load.
+# Set per-provider via CheckReceiver.admission_llm_provider.
+# IMPORTANT: Use /v1/chat/completions endpoint (standard OpenAI-compatible),
+# NOT /v1/systemone. The systemone endpoint has a different request format.
+ADMISSION_LLM_TIMEOUT_SECONDS = int(os.environ.get("ADMISSION_LLM_TIMEOUT_SECONDS", "30"))
 CHECK_RECEIVER_EVENT_RETENTION_DAYS = int(
     os.environ.get("CHECK_RECEIVER_EVENT_RETENTION_DAYS", "30")
 )

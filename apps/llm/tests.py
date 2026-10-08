@@ -114,6 +114,107 @@ class LLMRegistryTests(TestCase):
         self.assertEqual(call_kwargs["base_url"], "http://default:11434/v1")
         self.assertEqual(call_kwargs["model"], "default-model")
 
+    @patch("services.llm.jev_client.JEVClient")
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_detects_jev_endpoint_by_url(self, mock_openai, mock_jev):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="JEV", slug="jev")
+        LLMProvider.objects.create(
+            organization=org,
+            name="JEV Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://ollama:11434/v1/systemone",
+            model="nimble",
+            is_default=True,
+        )
+
+        client = get_llm_client(organization_id=str(org.id))
+
+        mock_jev.assert_called_once()
+        call_kwargs = mock_jev.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://ollama:11434")
+        self.assertEqual(call_kwargs["model"], "nimble")
+        mock_openai.assert_not_called()
+        self.assertIs(client, mock_jev.return_value)
+
+    @patch("services.llm.jev_client.JEVClient")
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_detects_systemone_without_v1_prefix(self, mock_openai, mock_jev):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="JEV2", slug="jev2")
+        LLMProvider.objects.create(
+            organization=org,
+            name="JEV Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://ollama:11434/systemone",
+            model="nimble",
+            is_default=True,
+        )
+
+        client = get_llm_client(organization_id=str(org.id))
+
+        mock_jev.assert_called_once()
+        call_kwargs = mock_jev.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://ollama:11434")
+        mock_openai.assert_not_called()
+        self.assertIs(client, mock_jev.return_value)
+
+    @patch("services.llm.jev_client.JEVClient")
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_detects_jev_in_middle_of_url(self, mock_openai, mock_jev):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="JEV3", slug="jev3")
+        LLMProvider.objects.create(
+            organization=org,
+            name="JEV Provider",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://ollama:11434/v1/systemone/extra",
+            model="nimble",
+            is_default=True,
+        )
+
+        client = get_llm_client(organization_id=str(org.id))
+
+        mock_jev.assert_called_once()
+        call_kwargs = mock_jev.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://ollama:11434")
+        mock_openai.assert_not_called()
+        self.assertIs(client, mock_jev.return_value)
+
+    @patch("services.llm.jev_client.JEVClient")
+    @patch("services.llm.registry.OpenAICompatibleClient")
+    def test_get_llm_client_explicit_jev_provider_id(self, mock_openai, mock_jev):
+        from services.llm.registry import get_llm_client
+
+        org = Organization.objects.create(name="JEV4", slug="jev4")
+        provider = LLMProvider.objects.create(
+            organization=org,
+            name="JEV Explicit",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://jev:11434/v1/systemone",
+            model="nimble",
+        )
+        LLMProvider.objects.create(
+            organization=org,
+            name="Default",
+            provider_type=LLMProvider.ProviderType.OLLAMA,
+            base_url="http://default:11434/v1",
+            model="default-model",
+            is_default=True,
+        )
+
+        client = get_llm_client(organization_id=str(org.id), provider_id=str(provider.id))
+
+        mock_jev.assert_called_once()
+        call_kwargs = mock_jev.call_args.kwargs
+        self.assertEqual(call_kwargs["base_url"], "http://jev:11434")
+        self.assertEqual(call_kwargs["model"], "nimble")
+        mock_openai.assert_not_called()
+        self.assertIs(client, mock_jev.return_value)
+
 
 class LLMApiTests(TestCase):
     def setUp(self):

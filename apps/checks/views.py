@@ -16,6 +16,7 @@ from apps.checks.models import (
     ReceiverEvent,
 )
 from apps.core.mixins import OrganizationRequiredMixin
+from apps.llm.models import LLMProvider
 from apps.notifications.models import NotificationPolicy
 from apps.personalities.models import Personality
 
@@ -284,6 +285,9 @@ class ReceiverCreateView(OrganizationRequiredMixin, View):
         context = {
             "organization": self.organization,
             "checks": Check.objects.filter(organization=self.organization),
+            "llm_providers": LLMProvider.objects.filter(
+                organization=self.organization, enabled=True
+            ).order_by("name"),
         }
         return render(request, "checks/receiver_form.html", context)
 
@@ -338,6 +342,9 @@ class ReceiverEditView(OrganizationRequiredMixin, View):
             "receiver": receiver,
             "organization": self.organization,
             "checks": Check.objects.filter(organization=self.organization),
+            "llm_providers": LLMProvider.objects.filter(
+                organization=self.organization, enabled=True
+            ).order_by("name"),
         }
         return render(request, "checks/receiver_form.html", context)
 
