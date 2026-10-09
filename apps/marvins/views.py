@@ -1,10 +1,18 @@
+# pyright: reportAttributeAccessIssue=false, reportCallIssue=false
+
 import json
 
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 
 from apps.core.mixins import OrganizationRequiredMixin
-from apps.marvins.models import Marvin, MarvinConfig, Resource, ResourceType
+from apps.marvins.models import (
+    Marvin,
+    MarvinConfig,
+    MarvinRegistrationKey,
+    Resource,
+    ResourceType,
+)
 
 
 def _resource_type_schemas() -> dict[str, dict]:
@@ -276,6 +284,65 @@ class MarvinConfigUpdateView(OrganizationRequiredMixin, View):
                 {"marvin": marvin, "capabilities": marvin.capabilities.all()},
             )
         return redirect("marvins:marvin-detail", marvin_id=marvin_id)
+
+
+class MarvinRegistrationKeyListView(OrganizationRequiredMixin, View):
+    def get(self, request):
+        keys = self.organization.marvin_registration_keys.all()
+        context = {
+            "keys": keys,
+        }
+        return render(request, "marvins/registration_key_list.html", context)
+
+
+class MarvinRegistrationKeyCreateView(OrganizationRequiredMixin, View):
+    def get(self, request):
+        context = {
+            "is_create": True,
+        }
+        return render(request, "marvins/registration_key_create.html", context)
+
+    def post(self, request):
+        name = request.POST.get("name", "").strip()
+        key = MarvinRegistrationKey.objects.create(organization=self.organization, name=name)
+        context = {
+            "key": key,
+            "is_create": False,
+        }
+        return render(request, "marvins/registration_key_create.html", context)
+
+
+class MarvinRegistrationKeyDeleteView(OrganizationRequiredMixin, View):
+    def get(self, request, key_id):
+        key = get_object_or_404(
+            MarvinRegistrationKey,
+            id=key_id,
+            organization=self.organization,
+        )
+        context = {
+            "key": key,
+        }
+        return render(request, "marvins/registration_key_delete.html", context)
+
+    def post(self, request, key_id):
+        key = get_object_or_404(
+            MarvinRegistrationKey,
+            id=key_id,
+            organization=self.organization,
+        )
+        key.delete()
+        return redirect("marvins:registration-key-list")
+
+
+class MarvinDeleteView(OrganizationRequiredMixin, View):
+    def post(self, request, marvin_id):
+        marvin = get_object_or_404(
+            Marvin,
+            id=marvin_id,
+            organization=self.organization,
+        )
+        marvin.delete()
+        return redirect("marvins:marvin-list")
 
 
 class MarvinAttachResourceView(OrganizationRequiredMixin, View):

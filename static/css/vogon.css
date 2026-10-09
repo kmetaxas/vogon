@@ -1323,6 +1323,11 @@ textarea.form-control {
   text-decoration: underline;
 }
 
+.data-table a.btn-primary,
+.data-table a.btn-danger {
+  color: #fff;
+}
+
 /* Form help text */
 .form-help {
   font-size: 0.75rem;

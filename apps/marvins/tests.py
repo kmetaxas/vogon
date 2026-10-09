@@ -1264,6 +1264,123 @@ class MarvinAPITests(TestCase):
         self.assertEqual(len(data), 0)
 
 
+class MarvinRegistrationKeyViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="key_viewer", password="pass")
+        self.organization = Organization.objects.create(name="Key Org", slug="key-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def test_registration_key_list_renders(self):
+        MarvinRegistrationKey.objects.create(organization=self.organization, name="Test Key")
+        response = self.client.get(reverse("marvins:registration-key-list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Test Key")
+
+    def test_registration_key_create_renders(self):
+        response = self.client.get(reverse("marvins:registration-key-create"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Generate Key")
+
+    def test_registration_key_create_generates_key(self):
+        response = self.client.post(
+            reverse("marvins:registration-key-create"),
+            {"name": "New Key"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Store this key")
+        self.assertTrue(
+            MarvinRegistrationKey.objects.filter(
+                organization=self.organization, name="New Key"
+            ).exists()
+        )
+
+    def test_registration_key_create_without_name(self):
+        response = self.client.post(reverse("marvins:registration-key-create"), {})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Store this key")
+        self.assertEqual(
+            MarvinRegistrationKey.objects.filter(organization=self.organization).count(),
+            1,
+        )
+
+    def test_registration_key_delete_confirmation_renders(self):
+        key = MarvinRegistrationKey.objects.create(organization=self.organization, name="To Delete")
+        response = self.client.get(
+            reverse("marvins:registration-key-delete", kwargs={"key_id": key.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "cannot be undone")
+
+    def test_registration_key_delete_removes_key(self):
+        key = MarvinRegistrationKey.objects.create(organization=self.organization, name="To Delete")
+        response = self.client.post(
+            reverse("marvins:registration-key-delete", kwargs={"key_id": key.id})
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(MarvinRegistrationKey.objects.filter(id=key.id).exists())
+
+    def test_registration_key_delete_cross_org_isolation(self):
+        other_org = Organization.objects.create(name="Other", slug="other")
+        key = MarvinRegistrationKey.objects.create(organization=other_org, name="Other Key")
+        response = self.client.get(
+            reverse("marvins:registration-key-delete", kwargs={"key_id": key.id})
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_registration_key_list_cross_org_isolation(self):
+        other_org = Organization.objects.create(name="Other", slug="other")
+        MarvinRegistrationKey.objects.create(organization=other_org, name="Other Key")
+        response = self.client.get(reverse("marvins:registration-key-list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Other Key")
+
+
+class MarvinDeleteViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="marvin_deleter", password="pass")
+        self.organization = Organization.objects.create(name="Del Org", slug="del-org")
+        OrganizationMembership.objects.create(
+            user=self.user,
+            organization=self.organization,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.client.force_login(self.user)
+
+    def test_marvin_delete_removes_offline_marvin(self):
+        Marvin = apps.get_model("marvins", "Marvin")
+        marvin = Marvin.objects.create(
+            organization=self.organization,
+            name="Stale Worker",
+            client_id="stale-worker",
+            status="offline",
+        )
+        response = self.client.post(
+            reverse("marvins:marvin-delete", kwargs={"marvin_id": marvin.id})
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(Marvin.objects.filter(id=marvin.id).exists())
+
+    def test_marvin_delete_cross_org_isolation(self):
+        Marvin = apps.get_model("marvins", "Marvin")
+        other_org = Organization.objects.create(name="Other", slug="other")
+        marvin = Marvin.objects.create(
+            organization=other_org,
+            name="Other Worker",
+            client_id="other-worker",
+            status="offline",
+        )
+        response = self.client.post(
+            reverse("marvins:marvin-delete", kwargs={"marvin_id": marvin.id})
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Marvin.objects.filter(id=marvin.id).exists())
+
+
 class ResourceTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="resource_user", password="pass")

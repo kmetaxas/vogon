@@ -5,6 +5,14 @@
 {% block content %}
 <h1>Marvin Agents</h1>
 
+<div class="page-header">
+    <div></div>
+    <div class="session-toolbar">
+        <a href="{% url 'marvins:registration-key-list' %}" class="btn btn-secondary">Marvin credentials</a>
+        <a href="{% url 'marvins:registration-key-create' %}" class="btn btn-primary">Add a Marvin</a>
+    </div>
+</div>
+
 <div class="card">
     {% if marvins %}
     <div class="session-list">
@@ -16,7 +24,18 @@
                     {{ marvin.client_id }} &middot; {{ marvin.last_seen|default:"Never" }}
                 </div>
             </div>
-            <span class="badge badge-{{ marvin.status }}">{{ marvin.status }}</span>
+            <div class="row-actions">
+                <span class="badge badge-{{ marvin.status }}">{{ marvin.status }}</span>
+                {% if marvin.status == 'offline' %}
+                <form method="post" action="{% url 'marvins:marvin-delete' marvin.id %}" style="display:inline;" onsubmit="return confirm('Remove this Marvin? This cannot be undone.');">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-danger" title="Remove Marvin">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5.5 9 8 6"></polyline></svg>
+                        Remove
+                    </button>
+                </form>
+                {% endif %}
+            </div>
         </a>
         {% endfor %}
     </div>
