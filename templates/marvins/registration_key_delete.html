@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+
+{% block title %}Remove Registration Key - Vogon{% endblock %}
+
+{% block content %}
+<h1>Remove Registration Key</h1>
+
+<div class="card" style="max-width: 560px;">
+    <div style="margin-bottom: var(--spacing-lg);">
+        <p>Are you sure you want to remove the registration key <strong>{{ key.name|default:key.key|slice:":8" }}…</strong>?</p>
+        <div class="alert alert-error">
+            This action cannot be undone. Any Marvin agents using this key will no longer be able to register.
+        </div>
+    </div>
+
+    <form method="post" action="{% url 'marvins:registration-key-delete' key.id %}">
+        {% csrf_token %}
+        <div class="form-actions" style="display:flex; gap:var(--spacing-sm);">
+            <button type="submit" class="btn btn-danger">Remove Key</button>
+            <a href="{% url 'marvins:registration-key-list' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+
+{% block title %}Marvin Registration Keys - Vogon{% endblock %}
+
+{% block content %}
+<h1>Marvin Registration Keys</h1>
+
+<div class="page-header">
+    <div></div>
+    <a href="{% url 'marvins:registration-key-create' %}" class="btn btn-primary">Generate New Key</a>
+</div>
+
+<div class="card">
+    {% if keys %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Prefix</th>
+                <th>Active</th>
+                <th>Created</th>
+                <th style="text-align:right;">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for key in keys %}
+            <tr>
+                <td>{{ key.name|default:"—" }}</td>
+                <td><code>{{ key.key|slice:":8" }}…</code></td>
+                <td>
+                    {% if key.active %}
+                        <span class="badge badge-success">Active</span>
+                    {% else %}
+                        <span class="badge badge-secondary">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>{{ key.created_at|date:"Y-m-d H:i" }}</td>
+                <td style="text-align:right;">
+                    <a href="{% url 'marvins:registration-key-delete' key.id %}" class="btn btn-sm btn-danger">Remove</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No registration keys yet.</p>
+    {% endif %}
+</div>
+{% endblock %}
