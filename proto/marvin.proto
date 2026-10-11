@@ -222,6 +222,21 @@ message ExecuteCapability {
   int32 result_index = 8;
 }
 
+// An attached resource sent as part of UpdateConfig.
+message ResourceConfig {
+  // UUID of the resource (matches Vogon database id).
+  string id = 1;
+
+  // Human-readable name (e.g. "prod-postgres").
+  string name = 2;
+
+  // Resource type slug (e.g. "postgres", "prometheus").
+  string type = 3;
+
+  // Opaque connection parameters validated by Vogon.
+  google.protobuf.Struct config = 4;
+}
+
 // Push configuration updates to the agent without requiring reconnect.
 message UpdateConfig {
   // One or more capabilities to update. If a capability is omitted,
@@ -231,6 +246,12 @@ message UpdateConfig {
   // Monotonic version for idempotency / ordering.
   // Agent should ignore updates with version <= last_applied_version.
   int64 config_version = 2;
+
+  // All resources currently attached to this Marvin.  The agent uses this
+  // to discover and initialise providers that were not present at
+  // registration time (e.g. attaching a Postgres resource after the
+  // stream is already up).
+  repeated ResourceConfig resources = 3;
 }
 
 // Graceful or forced disconnection request.

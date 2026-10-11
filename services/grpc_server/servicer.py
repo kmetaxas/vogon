@@ -11,6 +11,7 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.utils import timezone
+from google.protobuf import struct_pb2
 from grpc import aio
 
 import marvin_pb2 as marvin_pb2
@@ -161,31 +162,15 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                     marvin_instance = await sync_to_async(Marvin.objects.get)(client_id=agent_id)
                     effective_config = await sync_to_async(assemble_marvin_config)(marvin_instance)
 
-                    # Build UpdateConfig proto
-                    from google.protobuf import struct_pb2
-
-                    cap_manifests = []
-                    for cap_name, cap_cfg in effective_config.get("capabilities", {}).items():
-                        struct = struct_pb2.Struct()
-                        struct.update(cap_cfg)
-                        cap_manifests.append(
-                            marvin_pb2.CapabilityManifest(
-                                name=cap_name,
-                                config=struct,
-                            )
-                        )
-
                     config_version = int(datetime.now(UTC).timestamp())
+                    effective_config["config_version"] = config_version
 
                     registered_msg = marvin_pb2.ControlMessage(
                         command_id=str(uuid.uuid4()),
                         registered=marvin_pb2.Registered(
                             heartbeat_interval_seconds=10,
                             server_timestamp_unix_ms=int(datetime.now(UTC).timestamp() * 1000),
-                            effective_config=marvin_pb2.UpdateConfig(
-                                capabilities=cap_manifests,
-                                config_version=config_version,
-                            ),
+                            effective_config=self._build_update_config_proto(effective_config),
                         ),
                     )
                     yield registered_msg
@@ -500,10 +485,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
             payload = command["update_config"]
             return marvin_pb2.ControlMessage(
                 command_id=command["command_id"],
-                update_config=marvin_pb2.UpdateConfig(
-                    capabilities=payload.get("capabilities", []),
-                    config_version=payload.get("config_version", 0),
-                ),
+                update_config=self._build_update_config_proto(payload),
             )
         if "disconnect" in command:
             payload = command["disconnect"]
@@ -515,6 +497,40 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                 ),
             )
         raise ValueError(f"Unknown command type: {command}")
+
+    @staticmethod
+    def _build_update_config_proto(config_dict: dict[str, Any]) -> marvin_pb2.UpdateConfig:
+        cap_manifests = []
+        for cap_name, cap_cfg in config_dict.get("capabilities", {}).items():
+            struct = struct_pb2.Struct()
+            struct.update(cap_cfg)
+            resource_ids = config_dict.get("capability_resource_ids", {}).get(cap_name, [])
+            cap_manifests.append(
+                marvin_pb2.CapabilityManifest(
+                    name=cap_name,
+                    config=struct,
+                    resource_ids=resource_ids,
+                )
+            )
+
+        resource_configs = []
+        for resource_entry in config_dict.get("resources", []):
+            struct = struct_pb2.Struct()
+            struct.update(resource_entry.get("config", {}))
+            resource_configs.append(
+                marvin_pb2.ResourceConfig(
+                    id=resource_entry.get("id", ""),
+                    name=resource_entry.get("name", ""),
+                    type=resource_entry.get("type", ""),
+                    config=struct,
+                )
+            )
+
+        return marvin_pb2.UpdateConfig(
+            capabilities=cap_manifests,
+            config_version=config_dict.get("config_version", int(datetime.now(UTC).timestamp())),
+            resources=resource_configs,
+        )
 
 
 def _find_re_embedding_ids() -> list[str]:

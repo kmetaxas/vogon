@@ -6,8 +6,7 @@ from apps.marvins.models import Marvin
 
 
 def assemble_marvin_config(marvin: Marvin) -> dict[str, Any]:
-    """
-    Return the effective configuration dict for a Marvin.
+    """Return the effective configuration dict for a Marvin.
 
     Merging order (last wins):
       1. Agent-reported capability_configs (from registration)
@@ -19,6 +18,7 @@ def assemble_marvin_config(marvin: Marvin) -> dict[str, Any]:
         "global": {},
         "capabilities": {},
         "resources": [],
+        "capability_resource_ids": {},
     }
 
     # 1. Base from agent-reported configs
@@ -50,10 +50,11 @@ def assemble_marvin_config(marvin: Marvin) -> dict[str, Any]:
         }
         config["resources"].append(resource_entry)
 
-        # Inject resource config into matching capabilities
+        # Inject resource config into matching capabilities and track resource_ids
         for cap_name in resource.resource_type.capability_names:
             if cap_name in config["capabilities"]:
                 _deep_merge(config["capabilities"][cap_name], resource.config)
+                config["capability_resource_ids"].setdefault(cap_name, []).append(str(resource.id))
 
     return config
 

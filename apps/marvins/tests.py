@@ -419,9 +419,10 @@ class MarvinServicerTests(TransactionTestCase):
         organization = Organization.objects.create(name="Marvin", slug="marvin")
         Marvin = apps.get_model("marvins", "Marvin")
         marvin = Marvin.objects.create(
-            organization=organization,
+            organization=self.organization,
             name="Worker",
             client_id="worker-1",
+            capability_configs={"database": {"timeout": 30}},
         )
 
         asyncio.run(MarvinServicer()._update_marvin_status("worker-1", "online"))
@@ -1455,6 +1456,112 @@ class ResourceTests(TransactionTestCase):
         self.assertEqual(config["capabilities"]["k8s"]["endpoint"], "https://k8s.prod")
         self.assertEqual(len(config["resources"]), 1)
         self.assertEqual(config["resources"][0]["name"], "prod-k8s")
+        self.assertEqual(config["capability_resource_ids"]["k8s"], [str(resource.id)])
+
+    def test_config_assembly_capability_resource_ids_missing_when_no_match(self):
+        from apps.marvins.config_assembly import assemble_marvin_config
+
+        rt = ResourceType.objects.create(
+            name="postgres",
+            display_name="Postgres",
+            capability_names=["database"],
+        )
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-db",
+            resource_type=rt,
+            config={"host": "db.example.com"},
+        )
+        marvin = Marvin.objects.create(
+            organization=self.organization,
+            name="Worker",
+            client_id="worker-1",
+            capability_configs={"k8s": {"namespace": "default"}},
+        )
+        marvin.attached_resources.add(resource)
+
+        config = assemble_marvin_config(marvin)
+        self.assertNotIn("database", config["capabilities"])
+        self.assertNotIn("database", config.get("capability_resource_ids", {}))
+        self.assertEqual(len(config["resources"]), 1)
+
+    def test_build_update_config_proto(self):
+        from services.grpc_server.servicer import MarvinServicer
+
+        config_dict = {
+            "capabilities": {
+                "k8s": {"namespace": "default"},
+            },
+            "resources": [
+                {
+                    "id": "r1",
+                    "name": "prod-k8s",
+                    "type": "kubernetes",
+                    "config": {"endpoint": "https://k8s"},
+                },
+            ],
+            "capability_resource_ids": {
+                "k8s": ["r1"],
+            },
+            "config_version": 42,
+        }
+
+        proto = MarvinServicer._build_update_config_proto(config_dict)
+        self.assertEqual(proto.config_version, 42)
+        self.assertEqual(len(proto.capabilities), 1)
+        self.assertEqual(proto.capabilities[0].name, "k8s")
+        self.assertEqual(list(proto.capabilities[0].resource_ids), ["r1"])
+        self.assertEqual(len(proto.resources), 1)
+        self.assertEqual(proto.resources[0].name, "prod-k8s")
+        self.assertEqual(proto.resources[0].type, "kubernetes")
+        self.assertEqual(proto.resources[0].config["endpoint"], "https://k8s")
+
+    def test_push_config_on_resource_m2m_change(self):
+        marvin = Marvin.objects.create(
+            organization=self.organization,
+            name="Worker",
+            client_id="worker-1",
+            capability_configs={"database": {"timeout": 30}},
+        )
+        rt = ResourceType.objects.create(
+            name="postgres",
+            display_name="Postgres",
+            capability_names=["database"],
+        )
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-db",
+            resource_type=rt,
+            config={"host": "db.example.com"},
+        )
+
+        servicer = MarvinServicer()
+        stream = MarvinStream(marvin.client_id)
+        stream.connected = True
+        servicer.marvins[marvin.client_id] = stream
+
+        marvin.attached_resources.add(resource)
+
+        from apps.marvins.signals import _push_config_to_marvin
+
+        _push_config_to_marvin(marvin)
+
+        async def _read_queue():
+            command = await asyncio.wait_for(stream.command_queue.get(), timeout=1.0)
+            self.assertEqual(command["command_id"], f"config-push-{marvin.client_id}")
+            self.assertIn("update_config", command)
+            self.assertEqual(
+                command["update_config"]["capabilities"]["database"]["host"],
+                "db.example.com",
+            )
+            self.assertEqual(len(command["update_config"]["resources"]), 1)
+            self.assertEqual(command["update_config"]["resources"][0]["name"], "prod-db")
+            self.assertEqual(
+                command["update_config"]["capability_resource_ids"]["database"],
+                [str(resource.id)],
+            )
+
+        asyncio.run(_read_queue())
 
     def test_resource_attach_detach_api(self):
         rt = ResourceType.objects.create(name="vm", display_name="Virtual Machine")

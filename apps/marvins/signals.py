@@ -82,9 +82,7 @@ def _push_config_to_marvin(marvin: Marvin) -> None:
             "command_id": f"config-push-{marvin.client_id}",
             "update_config": effective,
         }
-        # Use call_soon_threadsafe because signals may run in a different thread
-        loop = asyncio.get_event_loop()
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(stream.command_queue.put(command)))
+        stream.command_queue.put_nowait(command)
         logger.info("Pushed config update to Marvin %s", marvin.client_id)
     except Exception:
         logger.exception("Failed to push config to Marvin %s", marvin.client_id)
