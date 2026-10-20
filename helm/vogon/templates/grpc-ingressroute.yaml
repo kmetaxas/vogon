@@ -1,0 +1,51 @@
+{{- if .Values.grpcIngress.enabled -}}
+apiVersion: {{ .Values.grpcIngress.apiGroup | default "traefik.io" }}/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "vogon.fullname" . }}-grpc
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+  {{- with .Values.grpcIngress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  entryPoints:
+    {{- range .Values.grpcIngress.entryPoints }}
+    - {{ . }}
+    {{- end }}
+  routes:
+    - match: Host(`{{ .Values.grpcIngress.host }}`)
+      kind: Rule
+      {{- if .Values.grpcIngress.middlewares }}
+      middlewares:
+        {{- range .Values.grpcIngress.middlewares }}
+        - name: {{ .name }}
+          {{- if .namespace }}
+          namespace: {{ .namespace }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      services:
+        - name: {{ include "vogon.fullname" . }}-grpc
+          port: {{ .Values.grpc.service.port }}
+          scheme: h2c
+          {{- if .Values.grpcIngress.serversTransport.enabled }}
+          serversTransport: {{ include "vogon.fullname" . }}-grpc
+          {{- end }}
+  {{- if .Values.grpcIngress.tls.enabled }}
+  tls:
+    {{- if .Values.grpcIngress.tls.certResolver }}
+    certResolver: {{ .Values.grpcIngress.tls.certResolver }}
+    {{- end }}
+    {{- if .Values.grpcIngress.tls.secretName }}
+    secretName: {{ .Values.grpcIngress.tls.secretName }}
+    {{- end }}
+    {{- if .Values.grpcIngress.tls.options }}
+    options:
+      name: {{ .Values.grpcIngress.tls.options.name }}
+      namespace: {{ .Values.grpcIngress.tls.options.namespace }}
+    {{- end }}
+  {{- end }}
+{{- end }}

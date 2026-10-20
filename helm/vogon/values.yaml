@@ -1,0 +1,219 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/example/vogon
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+podAnnotations: {}
+extraEnv: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+django:
+  settingsModule: vogon.settings
+  debug: "False"
+  allowedHosts: "vogon.example.com,localhost,127.0.0.1"
+  siteDomain: vogon.example.com
+  csrfTrustedOrigins: ""
+  siteName: Vogon
+
+database:
+  engine: django.db.backends.postgresql
+  name: vogon
+  user: vogon
+  host: postgres
+  port: "5432"
+  # When using an external secret (e.g. CNPG), provide the secret name and keys.
+  # If existingSecret.name is set, the chart-generated secret will NOT include
+  # DJANGO_DB_PASSWORD and the env var will be sourced from the external secret.
+  existingSecret:
+    name: ""
+    userKey: ""
+    passwordKey: ""
+
+temporal:
+  host: temporal:7233
+  namespace: default
+  taskQueue: vogon
+
+secret:
+  existingSecret: ""
+  djangoSecretKey: "change-me-generate-a-long-random-django-secret-key"
+  djangoDbPassword: "vogon"
+  llmApiKey: ""
+  prometheusAuthToken: ""
+  embeddingApiKey: ""
+
+web:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8000
+    nodePort: null
+  probes:
+    path: /
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+grpc:
+  replicaCount: 1
+  port: 50051
+  service:
+    type: ClusterIP
+    port: 50051
+    nodePort: null
+  probes:
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+mcp:
+  replicaCount: 1
+  port: 8080
+  host: 0.0.0.0
+  transport: http
+  toolTimeoutSeconds: 60
+  service:
+    type: ClusterIP
+    port: 8080
+    nodePort: null
+  probes:
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+grpcIngress:
+  enabled: false
+  # Traefik CRD API group. Use "traefik.containo.us" for Traefik v2 legacy CRDs.
+  apiGroup: "traefik.io"
+  entryPoints:
+    - websecure
+  host: marvin.example.com
+  annotations: {}
+  middlewares: []
+  tls:
+    enabled: true
+    # TLS secret name. Leave empty if using certResolver.
+    secretName: ""
+    # Traefik certResolver (e.g., letsencrypt) for automatic certificates.
+    certResolver: ""
+    # TLS options reference (name and namespace of a TLSOption CRD).
+    options: {}
+  # ServersTransport for backend gRPC connections.
+  # Disabling this may cause Traefik to close long-lived bidi streams early.
+  serversTransport:
+    enabled: true
+    maxIdleConnsPerHost: 100
+    forwardingTimeouts:
+      dialTimeout: 30s
+      responseHeaderTimeout: 0s
+      idleConnTimeout: 0s
+      readIdleTimeout: 0s
+      pingTimeout: 0s
+
+migrate:
+  backoffLimit: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+llm:
+  providerType: ollama
+  baseUrl: https://ollama.com/v1
+  model: gpt-oss:20b
+  temperature: "0.2"
+  maxTokens: "4096"
+  maxAgentIterations: "8"
+  toolTimeoutSeconds: "60"
+
+prometheus:
+  baseUrl: ""
+
+email:
+  backend: django.core.mail.backends.smtp.EmailBackend
+  host: ""
+  port: "587"
+  user: ""
+  password: ""
+  useTls: "True"
+  useSsl: "False"
+  defaultFrom: ""
+
+embedding:
+  providerType: openai
+  baseUrl: https://api.openai.com/v1
+  model: text-embedding-3-small
+  dimensions: "1536"
+  searchEnabled: "False"
+
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+  hosts:
+    - host: vogon.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vogon.fullname" . }}-grpc
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+spec:
+  replicas: {{ .Values.grpc.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "grpc") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "grpc") | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: grpc
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "services.grpc_server.main"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "vogon.configMapName" . }}
+            - secretRef:
+                name: {{ include "vogon.secretName" . }}
+          {{- if or .Values.database.existingSecret.name .Values.extraEnv }}
+          env:
+            {{- if .Values.database.existingSecret.name }}
+            - name: DJANGO_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.userKey | quote }}
+            - name: DJANGO_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.passwordKey | quote }}
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.grpc.port }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: {{ .Values.grpc.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.grpc.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.grpc.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.grpc.probes.liveness.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: {{ .Values.grpc.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.grpc.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.grpc.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.grpc.probes.readiness.failureThreshold }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.grpc.resources | nindent 12 }}

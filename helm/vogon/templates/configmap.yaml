@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vogon.configMapName" . }}
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+data:
+  DJANGO_SETTINGS_MODULE: {{ .Values.django.settingsModule | quote }}
+  DJANGO_DEBUG: {{ .Values.django.debug | quote }}
+  DJANGO_ALLOWED_HOSTS: {{ .Values.django.allowedHosts | quote }}
+  DJANGO_CSRF_TRUSTED_ORIGINS: {{ .Values.django.csrfTrustedOrigins | quote }}
+  DJANGO_DB_ENGINE: {{ .Values.database.engine | quote }}
+  DJANGO_DB_NAME: {{ .Values.database.name | quote }}
+  {{- if not .Values.database.existingSecret.name }}
+  DJANGO_DB_USER: {{ .Values.database.user | quote }}
+  {{- end }}
+  DJANGO_DB_HOST: {{ .Values.database.host | quote }}
+  DJANGO_DB_PORT: {{ .Values.database.port | quote }}
+  TEMPORAL_HOST: {{ .Values.temporal.host | quote }}
+  TEMPORAL_NAMESPACE: {{ .Values.temporal.namespace | quote }}
+  TEMPORAL_TASK_QUEUE: {{ .Values.temporal.taskQueue | quote }}
+  GRPC_PORT: {{ .Values.grpc.port | quote }}
+  MCP_PORT: {{ .Values.mcp.port | quote }}
+  MCP_TRANSPORT: {{ .Values.mcp.transport | quote }}
+  MCP_HOST: {{ .Values.mcp.host | quote }}
+  LLM_PROVIDER_TYPE: {{ .Values.llm.providerType | quote }}
+  LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
+  LLM_MODEL: {{ .Values.llm.model | quote }}
+  LLM_TEMPERATURE: {{ .Values.llm.temperature | quote }}
+  LLM_MAX_TOKENS: {{ .Values.llm.maxTokens | quote }}
+  LLM_MAX_AGENT_ITERATIONS: {{ .Values.llm.maxAgentIterations | quote }}
+  LLM_TOOL_TIMEOUT_SECONDS: {{ .Values.llm.toolTimeoutSeconds | quote }}
+  MCP_TOOL_TIMEOUT_SECONDS: {{ .Values.mcp.toolTimeoutSeconds | quote }}
+  PROMETHEUS_BASE_URL: {{ .Values.prometheus.baseUrl | quote }}
+  EMBEDDING_PROVIDER_TYPE: {{ .Values.embedding.providerType | quote }}
+  EMBEDDING_BASE_URL: {{ .Values.embedding.baseUrl | quote }}
+  EMBEDDING_MODEL: {{ .Values.embedding.model | quote }}
+  EMBEDDING_DIMENSIONS: {{ .Values.embedding.dimensions | quote }}
+  EMBEDDING_SEARCH_ENABLED: {{ .Values.embedding.searchEnabled | quote }}
+  EMAIL_BACKEND: {{ .Values.email.backend | quote }}
+  EMAIL_HOST: {{ .Values.email.host | quote }}
+  EMAIL_PORT: {{ .Values.email.port | quote }}
+  EMAIL_HOST_USER: {{ .Values.email.user | quote }}
+  EMAIL_USE_TLS: {{ .Values.email.useTls | quote }}
+  EMAIL_USE_SSL: {{ .Values.email.useSsl | quote }}
+  DEFAULT_FROM_EMAIL: {{ .Values.email.defaultFrom | quote }}

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vogon.fullname" . }}-mcp
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: {{ .Values.mcp.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "mcp") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "mcp") | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "services.mcp_server.main"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "vogon.configMapName" . }}
+            - secretRef:
+                name: {{ include "vogon.secretName" . }}
+          {{- if or .Values.database.existingSecret.name .Values.extraEnv }}
+          env:
+            {{- if .Values.database.existingSecret.name }}
+            - name: DJANGO_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.userKey | quote }}
+            - name: DJANGO_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.passwordKey | quote }}
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.mcp.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.mcp.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.mcp.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.mcp.probes.liveness.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.mcp.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.mcp.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.mcp.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.mcp.probes.readiness.failureThreshold }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}

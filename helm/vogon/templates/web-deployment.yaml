@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vogon.fullname" . }}-web
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vogon.componentSelectorLabels" (dict "root" . "component" "web") | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn"]
+          args: ["vogon.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "vogon.configMapName" . }}
+            - secretRef:
+                name: {{ include "vogon.secretName" . }}
+          {{- if or .Values.database.existingSecret.name .Values.extraEnv }}
+          env:
+            {{- if .Values.database.existingSecret.name }}
+            - name: DJANGO_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.userKey | quote }}
+            - name: DJANGO_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vogon.dbSecretName" . }}
+                  key: {{ .Values.database.existingSecret.passwordKey | quote }}
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.web.probes.path | quote }}
+              port: http
+              httpHeaders:
+                - name: host
+                  value:  {{ .Values.django.siteDomain }}
+            initialDelaySeconds: {{ .Values.web.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.web.probes.path | quote }}
+              port: http
+              httpHeaders:
+                - name: host
+                  value:  {{ .Values.django.siteDomain }}
+            initialDelaySeconds: {{ .Values.web.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.probes.readiness.failureThreshold }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}

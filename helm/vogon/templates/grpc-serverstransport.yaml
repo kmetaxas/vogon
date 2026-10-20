@@ -1,0 +1,17 @@
+{{- if .Values.grpcIngress.enabled -}}
+apiVersion: {{ .Values.grpcIngress.apiGroup | default "traefik.io" }}/v1alpha1
+kind: ServersTransport
+metadata:
+  name: {{ include "vogon.fullname" . }}-grpc
+  labels:
+    {{- include "vogon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grpc
+spec:
+  maxIdleConnsPerHost: {{ .Values.grpcIngress.serversTransport.maxIdleConnsPerHost }}
+  forwardingTimeouts:
+    dialTimeout: {{ .Values.grpcIngress.serversTransport.forwardingTimeouts.dialTimeout }}
+    responseHeaderTimeout: {{ .Values.grpcIngress.serversTransport.forwardingTimeouts.responseHeaderTimeout }}
+    idleConnTimeout: {{ .Values.grpcIngress.serversTransport.forwardingTimeouts.idleConnTimeout }}
+    readIdleTimeout: {{ .Values.grpcIngress.serversTransport.forwardingTimeouts.readIdleTimeout }}
+    pingTimeout: {{ .Values.grpcIngress.serversTransport.forwardingTimeouts.pingTimeout }}
+{{- end }}
