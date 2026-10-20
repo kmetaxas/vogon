@@ -29,6 +29,7 @@ from services.temporal_workers.activities import (
     _build_llm_context,
     _create_executions,
     _route_and_execute,
+    abort_session,
     build_llm_context,
     call_llm,
     create_assistant_message,
@@ -498,6 +499,133 @@ class SessionViewTests(TestCase):
         self.assertEqual(session.status, TSession.Status.COMPLETED)
         log_exception.assert_called_once()
 
+    @patch("apps.sessions.views.cancel_workflow_sync")
+    def test_session_abort_marks_aborted_and_returns_badge_partial(self, cancel_workflow):
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Abort me",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("sessions:session-abort", kwargs={"session_id": session.id}),
+            HTTP_HX_REQUEST="true",
+        )
+
+        session.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "sessions/_status_badge.html")
+        self.assertEqual(session.status, TSession.Status.ABORTED)
+        self.assertContains(response, "badge-aborted")
+        cancel_workflow.assert_called_once_with(str(session.id))
+
+    @patch("apps.sessions.views.cancel_workflow_sync")
+    def test_session_abort_forbidden_for_non_creator_member(self, cancel_workflow):
+        other = User.objects.create_user(username="bob", password="pass")
+        OrganizationMembership.objects.create(
+            user=other,
+            organization=self.organization,
+            role=OrganizationMembership.Role.MEMBER,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Creator only abort",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        self.client.force_login(other)
+
+        response = self.client.post(
+            reverse("sessions:session-abort", kwargs={"session_id": session.id}),
+        )
+
+        session.refresh_from_db()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(session.status, TSession.Status.ACTIVE)
+        cancel_workflow.assert_not_called()
+
+    @patch("apps.sessions.views.cancel_workflow_sync")
+    def test_session_abort_allowed_for_org_admin(self, cancel_workflow):
+        admin = User.objects.create_user(username="carol", password="pass")
+        OrganizationMembership.objects.create(
+            user=admin,
+            organization=self.organization,
+            role=OrganizationMembership.Role.ADMIN,
+        )
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Admin abort",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        self.client.force_login(admin)
+
+        response = self.client.post(
+            reverse("sessions:session-abort", kwargs={"session_id": session.id}),
+            HTTP_HX_REQUEST="true",
+        )
+
+        session.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.status, TSession.Status.ABORTED)
+        cancel_workflow.assert_called_once_with(str(session.id))
+
+    @patch("apps.sessions.views.cancel_workflow_sync")
+    def test_session_abort_marks_pending_tool_calls_failed(self, _cancel_workflow):
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Abort tool cleanup",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+        thread = Thread.objects.create(tsession=session, user=self.user)
+        pending_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.PENDING, parameters={"cmd": "ls"}
+        )
+        in_progress_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.IN_PROGRESS, parameters={"cmd": "df"}
+        )
+        completed_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.COMPLETED, parameters={"cmd": "ps"}
+        )
+
+        self.client.post(
+            reverse("sessions:session-abort", kwargs={"session_id": session.id}),
+            HTTP_HX_REQUEST="true",
+        )
+
+        pending_tc.refresh_from_db()
+        in_progress_tc.refresh_from_db()
+        completed_tc.refresh_from_db()
+        self.assertEqual(pending_tc.status, ToolCall.Status.FAILED)
+        self.assertEqual(in_progress_tc.status, ToolCall.Status.FAILED)
+        self.assertEqual(completed_tc.status, ToolCall.Status.COMPLETED)
+
+    @patch("apps.sessions.views.logger.exception")
+    @patch("apps.sessions.views.cancel_workflow_sync", side_effect=RuntimeError("offline"))
+    def test_session_abort_survives_temporal_failure(self, _cancel_workflow, log_exception):
+        session = TSession.objects.create(
+            organization=self.organization,
+            title="Offline abort",
+            status=TSession.Status.ACTIVE,
+            created_by=self.user,
+        )
+
+        response = self.client.post(
+            reverse("sessions:session-abort", kwargs={"session_id": session.id}),
+        )
+
+        session.refresh_from_db()
+
+        self.assertRedirects(
+            response,
+            reverse("sessions:session-detail", kwargs={"session_id": session.id}),
+        )
+        self.assertEqual(session.status, TSession.Status.ABORTED)
+        log_exception.assert_called_once()
+
 
 class TroubleshootWorkflowTests(TestCase):
     def test_run_creates_assistant_message_after_user_signal(self):
@@ -613,6 +741,42 @@ class TroubleshootWorkflowTests(TestCase):
             execute_activity.await_args_list[create_idx].kwargs["args"],
             ["thread-2", "slashdot.org is reachable.", 0, 0, "0.00", ""],
         )
+
+    def test_run_aborts_gracefully_on_cancel_signal(self):
+        workflow_instance = TroubleshootWorkflow()
+
+        async def fake_wait_condition(predicate):
+            if not predicate():
+                await workflow_instance.cancel()
+
+        execute_activity = AsyncMock(
+            side_effect=[
+                {
+                    "session_id": "session-1",
+                    "thread_id": "thread-1",
+                    "status": "initialized",
+                },
+                {"session_id": "session-1", "status": "aborted"},
+            ]
+        )
+
+        with (
+            patch(
+                "services.temporal_workers.workflows.workflow.execute_activity",
+                execute_activity,
+            ),
+            patch(
+                "services.temporal_workers.workflows.workflow.wait_condition",
+                AsyncMock(side_effect=fake_wait_condition),
+            ),
+            patch("services.temporal_workers.workflows.workflow.logger", Mock()),
+        ):
+            state = asyncio.run(workflow_instance.run("session-1", "thread-1"))
+
+        self.assertEqual(state["status"], "aborted")
+        names = [call.args[0] for call in execute_activity.await_args_list]
+        self.assertEqual(names, ["initialize_session", "abort_session"])
+        self.assertEqual(execute_activity.await_args_list[1].kwargs["args"], ["session-1"])
 
 
 class AutonomousInvestigationWorkflowTests(SimpleTestCase):
@@ -1060,6 +1224,37 @@ class TemporalActivityTests(TransactionTestCase):
         )
         self.assertEqual(session.status, TSession.Status.ACTIVE)
         self.assertEqual(thread.status, Thread.Status.ACTIVE)
+
+    def test_abort_session_marks_tool_calls_failed_and_session_aborted(self):
+        user = User.objects.create_user(username="abort_act", password="pass")
+        organization = Organization.objects.create(name="AbortAct", slug="abortact")
+        session = TSession.objects.create(
+            organization=organization,
+            title="Abort Activity",
+            created_by=user,
+        )
+        thread = Thread.objects.create(tsession=session, user=user)
+        pending_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.PENDING, parameters={"cmd": "ls"}
+        )
+        in_progress_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.IN_PROGRESS, parameters={"cmd": "df"}
+        )
+        completed_tc = ToolCall.objects.create(
+            thread=thread, status=ToolCall.Status.COMPLETED, parameters={"cmd": "ps"}
+        )
+
+        result = asyncio.run(abort_session(str(session.id)))
+
+        session.refresh_from_db()
+        pending_tc.refresh_from_db()
+        in_progress_tc.refresh_from_db()
+        completed_tc.refresh_from_db()
+        self.assertEqual(result, {"session_id": str(session.id), "status": TSession.Status.ABORTED})
+        self.assertEqual(session.status, TSession.Status.ABORTED)
+        self.assertEqual(pending_tc.status, ToolCall.Status.FAILED)
+        self.assertEqual(in_progress_tc.status, ToolCall.Status.FAILED)
+        self.assertEqual(completed_tc.status, ToolCall.Status.COMPLETED)
 
     def test_build_llm_context_includes_system_prompt_and_messages(self):
         user = User.objects.create_user(username="build_ctx", password="pass")
@@ -4441,3 +4636,24 @@ class MessageModelNameBackfillTests(TestCase):
 
         message.refresh_from_db()
         self.assertEqual(message.model_name, "default-model")
+
+
+class LLMMaxParallelToolCallsSettingTests(TestCase):
+    """Verify that LLM_MAX_PARALLEL_TOOL_CALLS is read from settings, not hardcoded."""
+
+    def test_workflow_uses_setting_for_parallel_tool_calls(self):
+        from django.conf import settings
+
+        from services.temporal_workers.workflows import TroubleshootWorkflow
+
+        # The setting should exist and be an integer
+        self.assertTrue(hasattr(settings, "LLM_MAX_PARALLEL_TOOL_CALLS"))
+        self.assertIsInstance(settings.LLM_MAX_PARALLEL_TOOL_CALLS, int)
+        self.assertGreater(settings.LLM_MAX_PARALLEL_TOOL_CALLS, 0)
+
+        # The workflow class should not define a hardcoded constant
+        import inspect
+
+        source = inspect.getsource(TroubleshootWorkflow)
+        self.assertNotIn("MAX_PARALLEL_TOOL_CALLS = 6", source)
+        self.assertIn("settings.LLM_MAX_PARALLEL_TOOL_CALLS", source)

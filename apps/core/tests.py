@@ -4,8 +4,10 @@ from django.template import Context, Template
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from apps.core.middleware import EmergencyBrakeMiddleware
 from apps.core.models import (
     Organization,
+    OrganizationEmergencyBrake,
     OrganizationInvitation,
     OrganizationMembership,
     User,
@@ -532,3 +534,129 @@ class MoneyFilterTests(TestCase):
 
     def test_invalid_input_renders_zero(self):
         self.assertEqual(self._render("not-a-number"), "$0.00")
+
+
+class OrganizationEmergencyBrakeToggleViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="alice", password="pass", email="alice@example.com"
+        )
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, role=OrganizationMembership.Role.OWNER
+        )
+        self.client.force_login(self.user)
+
+    def test_admin_can_toggle_brake_on(self):
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["is_active"])
+        self.assertTrue(
+            OrganizationEmergencyBrake.objects.filter(
+                organization=self.org, is_active=True
+            ).exists()
+        )
+
+    def test_admin_can_toggle_brake_off(self):
+        OrganizationEmergencyBrake.objects.create(organization=self.org, is_active=True)
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["is_active"])
+
+    def test_member_cannot_toggle_brake(self):
+        member = User.objects.create_user(username="bob", password="pass", email="bob@example.com")
+        OrganizationMembership.objects.create(
+            user=member, organization=self.org, role=OrganizationMembership.Role.MEMBER
+        )
+        self.client.force_login(member)
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 403)
+
+    def test_anonymous_cannot_toggle_brake(self):
+        self.client.logout()
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/accounts/login/", response.url)
+
+    def test_superuser_can_toggle_brake(self):
+        superuser = User.objects.create_superuser(
+            username="admin", password="pass", email="admin@example.com"
+        )
+        self.client.force_login(superuser)
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["is_active"])
+
+
+class EmergencyBrakeMiddlewareTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="alice", password="pass", email="alice@example.com"
+        )
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        OrganizationMembership.objects.create(
+            user=self.user, organization=self.org, role=OrganizationMembership.Role.OWNER
+        )
+        self.client.force_login(self.user)
+        EmergencyBrakeMiddleware.clear_cache()
+
+    def _enable_brake(self):
+        OrganizationEmergencyBrake.objects.create(organization=self.org, is_active=True)
+        EmergencyBrakeMiddleware.clear_cache(self.org.id)
+
+    def _disable_brake(self):
+        OrganizationEmergencyBrake.objects.filter(organization=self.org).delete()
+        EmergencyBrakeMiddleware.clear_cache(self.org.id)
+
+    def test_get_allowed_when_brake_on(self):
+        self._enable_brake()
+        response = self.client.get(reverse("core:dashboard"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_post_blocked_when_brake_on(self):
+        self._enable_brake()
+        response = self.client.post(
+            reverse("core:org-detail"),
+            {"name": "Acme Inc", "email_domain": ""},
+        )
+        self.assertEqual(response.status_code, 503)
+
+    def test_post_allowed_when_brake_off(self):
+        self._disable_brake()
+        response = self.client.post(
+            reverse("core:org-detail"),
+            {"name": "Acme Inc", "email_domain": ""},
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_superuser_post_not_blocked(self):
+        superuser = User.objects.create_superuser(
+            username="admin", password="pass", email="admin@example.com"
+        )
+        OrganizationMembership.objects.create(
+            user=superuser, organization=self.org, role=OrganizationMembership.Role.OWNER
+        )
+        self.client.force_login(superuser)
+        self._enable_brake()
+        response = self.client.post(
+            reverse("core:org-detail"),
+            {"name": "Acme Inc", "email_domain": ""},
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_anonymous_post_not_blocked(self):
+        self.client.logout()
+        self._enable_brake()
+        response = self.client.post(reverse("core:org-detail"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/accounts/login/", response.url)
+
+    def test_toggle_endpoint_works_when_brake_on(self):
+        self._enable_brake()
+        response = self.client.post(reverse("core:org-emergency-brake-toggle"))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["is_active"])

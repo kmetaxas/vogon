@@ -16,6 +16,7 @@ urlpatterns = [
     path(
         "<uuid:session_id>/complete/", views.SessionCompleteView.as_view(), name="session-complete"
     ),
+    path("<uuid:session_id>/abort/", views.SessionAbortView.as_view(), name="session-abort"),
     path(
         "<uuid:session_id>/architecture/",
         views.ArchitectureRequestUploadView.as_view(),

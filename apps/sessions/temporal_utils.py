@@ -78,6 +78,18 @@ async def complete_session_workflow(session_id: str) -> None:
     await workflow_handle.signal(TroubleshootWorkflow.complete)
 
 
+async def cancel_workflow(session_id: str) -> None:
+    """Cancel a running troubleshooting workflow.
+
+    Signals the workflow to abort gracefully (marking in-flight tool calls
+    failed) and then cancels it so it terminates even if mid-activity.
+    """
+    temporal_client = await get_temporal_client()
+    workflow_handle = temporal_client.get_workflow_handle(f"tsession-{session_id}")
+    await workflow_handle.signal(TroubleshootWorkflow.cancel)
+    await workflow_handle.cancel()
+
+
 def start_troubleshoot_workflow_sync(
     session_id: str,
     thread_id: str,
@@ -96,3 +108,7 @@ def send_message_to_workflow_sync(
 
 def complete_session_workflow_sync(session_id: str) -> None:
     async_to_sync(complete_session_workflow)(session_id)
+
+
+def cancel_workflow_sync(session_id: str) -> None:
+    async_to_sync(cancel_workflow)(session_id)

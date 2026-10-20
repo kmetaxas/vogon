@@ -307,6 +307,10 @@ textarea.form-control {
   background: #fee2e2;
   color: #991b1b;
 }
+.badge-aborted {
+  background: #f3f4f6;
+  color: #6b7280;
+}
 .badge-online {
   background: #d1fae5;
   color: #065f46;

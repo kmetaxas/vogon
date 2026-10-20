@@ -5,7 +5,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.mail import send_mail
 from django.db import transaction
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -15,6 +15,7 @@ from django.views import View
 from apps.core.mixins import OrganizationRequiredMixin
 from apps.core.models import (
     Organization,
+    OrganizationEmergencyBrake,
     OrganizationInvitation,
     OrganizationMembership,
 )
@@ -386,3 +387,35 @@ class OrganizationMemberRoleUpdateView(OrganizationRequiredMixin, View):
         target_membership.save(update_fields=["role"])
         messages.success(request, "Member role updated.")
         return redirect("core:org-detail")
+
+
+class OrganizationEmergencyBrakeToggleView(OrganizationRequiredMixin, View):
+    """POST only. Admin or superuser toggles the organization emergency brake."""
+
+    def post(self, request):
+        if not request.user.is_superuser:
+            membership = get_object_or_404(
+                OrganizationMembership,
+                user=request.user,
+                organization=self.organization,
+            )
+            if not membership.is_admin():
+                return HttpResponseForbidden("Only admins can toggle the emergency brake.")
+
+        brake, _created = OrganizationEmergencyBrake.objects.get_or_create(
+            organization=self.organization,
+            defaults={"is_active": False},
+        )
+        brake.is_active = not brake.is_active
+        brake.save(update_fields=["is_active", "updated_at"])
+
+        from apps.core.middleware import EmergencyBrakeMiddleware
+
+        EmergencyBrakeMiddleware.clear_cache(self.organization.id)
+
+        return JsonResponse(
+            {
+                "is_active": brake.is_active,
+                "organization_id": str(self.organization.id),
+            }
+        )

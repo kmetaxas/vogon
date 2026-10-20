@@ -68,6 +68,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
     "apps.core.middleware.OrganizationSetupMiddleware",
+    "apps.core.middleware.EmergencyBrakeMiddleware",
 ]
 
 ROOT_URLCONF = "vogon.urls"
@@ -175,6 +176,14 @@ TEMPORAL_TASK_QUEUE = os.environ.get("TEMPORAL_TASK_QUEUE", "vogon")
 
 # gRPC
 GRPC_PORT = int(os.environ.get("GRPC_PORT", "50051"))
+GRPC_TLS_ENABLED = os.environ.get("GRPC_TLS_ENABLED", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+GRPC_TLS_CERT_FILE = os.environ.get("GRPC_TLS_CERT_FILE", "")
+GRPC_TLS_KEY_FILE = os.environ.get("GRPC_TLS_KEY_FILE", "")
+GRPC_TLS_CA_FILE = os.environ.get("GRPC_TLS_CA_FILE", "")
 
 # MCP
 MCP_PORT = int(os.environ.get("MCP_PORT", "8080"))

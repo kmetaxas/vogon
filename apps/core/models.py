@@ -29,6 +29,10 @@ class Organization(models.Model):
             "can join the organization (e.g. 'example.com')."
         ),
     )
+    max_concurrent_executions = models.PositiveIntegerField(
+        default=20,
+        help_text="Organization-wide concurrent execution ceiling.",
+    )
 
     class Meta:
         ordering = ["name"]
@@ -99,6 +103,26 @@ class OrganizationMembership(models.Model):
 
     def is_admin(self):
         return self.role in (self.Role.OWNER, self.Role.ADMIN)
+
+
+class OrganizationEmergencyBrake(models.Model):
+    objects = models.Manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="emergency_brake",
+    )
+    is_active = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        status = "ON" if self.is_active else "OFF"
+        return f"Emergency brake for {self.organization.name} ({status})"
 
 
 class OrganizationInvitation(models.Model):

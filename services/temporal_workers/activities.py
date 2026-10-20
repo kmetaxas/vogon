@@ -174,6 +174,26 @@ def _set_session_status(session_id: str, status: str) -> dict:
 
 
 @activity.defn
+async def abort_session(session_id: str) -> dict:
+    """Abort a troubleshooting session: fail in-flight tool calls and mark it aborted."""
+    return await sync_to_async(_abort_session)(session_id)
+
+
+def _abort_session(session_id: str) -> dict:
+    _setup_django_models()
+    from apps.sessions.models import ToolCall, TSession
+
+    session = TSession.objects.get(id=session_id)
+    ToolCall.objects.filter(
+        thread__tsession=session,
+        status__in=[ToolCall.Status.PENDING, ToolCall.Status.IN_PROGRESS],
+    ).update(status=ToolCall.Status.FAILED)
+    session.status = TSession.Status.ABORTED
+    session.save(update_fields=["status", "updated_at"])
+    return {"session_id": session_id, "status": TSession.Status.ABORTED}
+
+
+@activity.defn
 async def check_completion(session_id: str, state: dict) -> bool:
     """Check if the troubleshooting session is complete."""
     return await sync_to_async(_check_completion)(session_id, state)
@@ -360,7 +380,11 @@ SYSTEM_PROMPT = (
     "At your disposal, you have agents running on the infrastructure. "
     "These provide investigative and testing capabilities that can be looked-up with "
     "find_tools() and then executed. "
-    "When multiple independent tools are needed, request them all at once isntead of one at a time"
+    "When multiple independent tools are needed, request them all at once "
+    "instead of one at a time. "
+    "Use labels (e.g., cluster:prod, service:kafka) for topology-aware targeting. "
+    "Prefer narrow label selectors to avoid overly broad matches. "
+    "Note that selection_strategy='all' may target many agents and should be used sparingly."
 )
 
 
@@ -902,9 +926,11 @@ def _find_tools(
 def _route_and_execute(org, thread, args):
     _setup_django_models()
 
+    import jsonschema
+
     from apps.marvins.discovery import BudgetExceeded, DiscoveryEngine, DiscoveryError
     from apps.marvins.labels import LabelSelectorError, parse_label_selector
-    from apps.marvins.models import Marvin
+    from apps.marvins.models import Capability, Marvin
     from apps.marvins.selectors import TargetSelector
     from apps.sessions.models import ToolCall
     from services.temporal_workers import fanout
@@ -927,6 +953,29 @@ def _route_and_execute(org, thread, args):
         )
 
     from apps.sessions.budget import release_execution_budget
+
+    # Validate parameters against capability json_schema if present
+    parameters = args.get("parameters", {}) or {}
+    if parameters and capability_name:
+        try:
+            capability_obj = Capability.objects.get(
+                organization=org, name=capability_name, enabled=True
+            )
+            if capability_obj.json_schema:
+                jsonschema.validate(instance=parameters, schema=capability_obj.json_schema)
+        except Capability.DoesNotExist:
+            pass  # Will be caught by fanout.resolve_targets
+        except jsonschema.ValidationError as exc:
+            return (
+                None,
+                [],
+                {
+                    "error": (
+                        f"Parameter validation failed for capability "
+                        f"'{capability_name}': {exc.message}"
+                    )
+                },
+            )
 
     engine = DiscoveryEngine()
     target_set = None

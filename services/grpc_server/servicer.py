@@ -5,11 +5,14 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+import grpc
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.utils import timezone
 from grpc import aio
 
@@ -35,30 +38,143 @@ def _set_active_servicer(servicer: Any) -> None:
     _active_servicer = servicer
 
 
+# Default circuit breaker settings when no CircuitBreakerConfig exists.
+DEFAULT_FAILURE_THRESHOLD = 5
+DEFAULT_RECOVERY_TIMEOUT_SECONDS = 60.0
+
+# Per-Marvin in-flight command cap.
+MAX_IN_FLIGHT_PER_MARVIN = 5
+
+# Bounded command queue size per Marvin stream.
+COMMAND_QUEUE_MAXSIZE = 100
+
+
+class CircuitBreakerOpenError(Exception):
+    """Raised when a circuit breaker rejects a command for a (capability, marvin)."""
+
+
+class ConcurrencyLimitExceededError(Exception):
+    """Raised when a Marvin reaches its in-flight command limit."""
+
+
+class CircuitBreaker:
+    """Tracks command failures per (capability, marvin) and opens a breaker.
+
+    Once ``record_failure`` is called ``failure_threshold`` times without an
+    intervening success, the breaker opens and ``allow`` returns False for the
+    recovery window. After the window elapses, the breaker resets and commands
+    are allowed again.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
+        recovery_timeout_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout_seconds = recovery_timeout_seconds
+        self._failures: dict[tuple[str, str], int] = {}
+        self._opened_until: dict[tuple[str, str], float] = {}
+
+    def allow(self, capability: str, marvin_id: str) -> bool:
+        """Return whether a command is allowed for this (capability, marvin)."""
+        key = (capability, marvin_id)
+        opened_until = self._opened_until.get(key)
+        if opened_until is None:
+            return True
+        if time.monotonic() < opened_until:
+            return False
+        # Recovery window elapsed: close the breaker.
+        self._opened_until.pop(key, None)
+        self._failures.pop(key, None)
+        return True
+
+    def is_open(self, capability: str, marvin_id: str) -> bool:
+        """Return whether the breaker is currently open (no side effects)."""
+        key = (capability, marvin_id)
+        opened_until = self._opened_until.get(key)
+        return opened_until is not None and time.monotonic() < opened_until
+
+    def record_failure(
+        self,
+        capability: str,
+        marvin_id: str,
+        threshold: int | None = None,
+        recovery_timeout_seconds: float | None = None,
+    ) -> None:
+        """Record a failure, opening the breaker once the threshold is reached."""
+        threshold = self.failure_threshold if threshold is None else threshold
+        recovery = (
+            self.recovery_timeout_seconds
+            if recovery_timeout_seconds is None
+            else recovery_timeout_seconds
+        )
+        key = (capability, marvin_id)
+        failures = self._failures.get(key, 0) + 1
+        if failures >= threshold:
+            self._opened_until[key] = time.monotonic() + recovery
+            self._failures.pop(key, None)
+        else:
+            self._failures[key] = failures
+
+    def record_success(self, capability: str, marvin_id: str) -> None:
+        """Reset the failure count after a successful command."""
+        self._failures.pop((capability, marvin_id), None)
+
+
+def _command_capability(command: dict[str, Any]) -> str | None:
+    """Return the capability name for a command, or None if not applicable."""
+    execute = command.get("execute_capability")
+    if not execute:
+        return None
+    return execute.get("capability_name") or None
+
+
 class MarvinStream:
     """Represents a bi-directional stream with a Marvin agent."""
 
-    def __init__(self, agent_id: str):
+    def __init__(self, agent_id: str, servicer: "MarvinServicer | None" = None):
         self.agent_id = agent_id
-        self.command_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.servicer = servicer
+        self.command_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=COMMAND_QUEUE_MAXSIZE
+        )
         self.response_futures: dict[str, asyncio.Future] = {}
         self.connected = False
         self.last_seen = datetime.now(UTC)
 
     async def send_command(self, command: dict) -> dict:
-        """Send a command to the Marvin and wait for response."""
+        """Send a command to the Marvin and wait for response.
+
+        Applies the circuit breaker and per-Marvin concurrency cap (via the
+        owning servicer) before dispatching the command.
+        """
         command_id = command["command_id"]
-        future = asyncio.get_event_loop().create_future()
-        self.response_futures[command_id] = future
-        await self.command_queue.put(command)
+        capability_name = _command_capability(command)
+        servicer = self.servicer
+
+        if servicer is not None:
+            if capability_name is not None:
+                servicer.check_circuit_breaker(self.agent_id, capability_name)
+            servicer.acquire_command_slot(self.agent_id)
 
         try:
-            result = await asyncio.wait_for(future, timeout=300)
+            future = asyncio.get_event_loop().create_future()
+            self.response_futures[command_id] = future
+            await self.command_queue.put(command)
+            try:
+                result = await asyncio.wait_for(future, timeout=300)
+            except TimeoutError:
+                if servicer is not None and capability_name is not None:
+                    await servicer.record_circuit_breaker_failure(self.agent_id, capability_name)
+                raise TimeoutError(f"Command {command_id} timed out")
+            if servicer is not None and capability_name is not None:
+                servicer.record_circuit_breaker_success(self.agent_id, capability_name)
             return result
-        except TimeoutError:
-            raise TimeoutError(f"Command {command_id} timed out")
         finally:
             self.response_futures.pop(command_id, None)
+            if servicer is not None:
+                servicer.release_command_slot(self.agent_id)
 
     def handle_response(self, command_id: str, result: dict):
         """Handle a response from the Marvin."""
@@ -75,6 +191,8 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
         self._lock = asyncio.Lock()
         self._embedding_tasks: list[asyncio.Task] = []
         self._embedding_poll_task: asyncio.Task | None = None
+        self.circuit_breaker = CircuitBreaker()
+        self._in_flight: dict[str, int] = {}
         _set_active_servicer(self)
 
     async def Connect(self, request_iterator, context):  # noqa: N802
@@ -145,7 +263,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                         yield rejected_msg
                         break
 
-                    stream = MarvinStream(agent_id)
+                    stream = MarvinStream(agent_id, self)
                     async with self._lock:
                         self.marvins[agent_id] = stream
                     stream.connected = True
@@ -195,6 +313,10 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                         stream.last_seen = datetime.now(UTC)
                     if agent_id is not None:
                         await self._update_marvin_status(agent_id, "online")
+                        if message.heartbeat.HasField("resources"):
+                            await self._persist_health_metrics(
+                                agent_id, message.heartbeat.resources
+                            )
 
                     hb_ack = marvin_pb2.ControlMessage(
                         command_id=str(uuid.uuid4()),
@@ -476,6 +598,116 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
         except Marvin.DoesNotExist:
             logger.warning(f"Marvin with agent_id {agent_id} not found in database")
 
+    def check_circuit_breaker(self, agent_id: str, capability_name: str) -> None:
+        """Raise CircuitBreakerOpenError if the breaker is open for (capability, marvin)."""
+        if not self.circuit_breaker.allow(capability_name, agent_id):
+            raise CircuitBreakerOpenError(
+                f"Circuit breaker open for capability '{capability_name}' on Marvin {agent_id}"
+            )
+
+    async def record_circuit_breaker_failure(self, agent_id: str, capability_name: str) -> None:
+        """Record a command failure and open the breaker once the threshold is reached."""
+        threshold, recovery = await self._get_breaker_config(capability_name)
+        self.circuit_breaker.record_failure(
+            capability_name,
+            agent_id,
+            threshold=threshold,
+            recovery_timeout_seconds=recovery,
+        )
+
+    def record_circuit_breaker_success(self, agent_id: str, capability_name: str) -> None:
+        """Reset the breaker failure count after a successful command."""
+        self.circuit_breaker.record_success(capability_name, agent_id)
+
+    def acquire_command_slot(self, agent_id: str) -> None:
+        """Reserve an in-flight slot, raising ConcurrencyLimitExceededError at the cap."""
+        count = self._in_flight.get(agent_id, 0)
+        if count >= MAX_IN_FLIGHT_PER_MARVIN:
+            raise ConcurrencyLimitExceededError(
+                f"Marvin {agent_id} has {count} in-flight commands (max {MAX_IN_FLIGHT_PER_MARVIN})"
+            )
+        self._in_flight[agent_id] = count + 1
+
+    def release_command_slot(self, agent_id: str) -> None:
+        """Release a reserved in-flight slot."""
+        count = self._in_flight.get(agent_id, 0) - 1
+        if count <= 0:
+            self._in_flight.pop(agent_id, None)
+        else:
+            self._in_flight[agent_id] = count
+
+    async def _get_breaker_config(self, capability_name: str) -> tuple[int, float]:
+        """Return (failure_threshold, recovery_timeout_seconds) for a capability."""
+        config = await sync_to_async(self._get_breaker_config_in_database)(capability_name)
+        if config is None:
+            return DEFAULT_FAILURE_THRESHOLD, DEFAULT_RECOVERY_TIMEOUT_SECONDS
+        return config.failure_threshold, float(config.recovery_timeout_seconds)
+
+    def _get_breaker_config_in_database(self, capability_name: str):
+        import os
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vogon.settings")
+
+        import django
+
+        django.setup()
+
+        from apps.marvins.models import CircuitBreakerConfig
+
+        try:
+            return CircuitBreakerConfig.objects.filter(
+                capability_name=capability_name, enabled=True
+            ).first()
+        except Exception:
+            logger.warning(
+                "Failed to load circuit breaker config for %s", capability_name, exc_info=True
+            )
+            return None
+
+    async def _persist_health_metrics(self, agent_id: str, resources: Any) -> None:
+        """Persist heartbeat ResourceMetrics to MarvinHealthMetrics."""
+        await sync_to_async(self._persist_health_metrics_in_database)(
+            agent_id,
+            resources.cpu_usage,
+            resources.memory_usage,
+            resources.load_average,
+            resources.disk_usage,
+        )
+
+    def _persist_health_metrics_in_database(
+        self,
+        agent_id: str,
+        cpu_usage: float,
+        memory_usage: float,
+        load_average: float,
+        disk_usage: float,
+    ) -> None:
+        import os
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vogon.settings")
+
+        import django
+
+        django.setup()
+
+        from apps.marvins.models import Marvin, MarvinHealthMetrics
+
+        try:
+            marvin = Marvin.objects.get(client_id=agent_id)
+        except Marvin.DoesNotExist:
+            logger.warning("Marvin with agent_id %s not found for health metrics", agent_id)
+            return
+
+        MarvinHealthMetrics.objects.update_or_create(
+            marvin=marvin,
+            defaults={
+                "cpu_usage": cpu_usage * 100.0,
+                "memory_usage": memory_usage * 100.0,
+                "load_average": load_average,
+                "disk_usage": disk_usage,
+            },
+        )
+
     def get_marvin_stream(self, marvin_id: str) -> MarvinStream | None:
         """Get the stream for a specific Marvin."""
         return self.marvins.get(marvin_id)
@@ -543,7 +775,36 @@ async def serve_grpc(servicer: MarvinServicer, port: int = 50051):
     ]
     server = aio.server(options=server_options)
     marvin_pb2_grpc.add_MarvinServiceServicer_to_server(servicer, server)
-    server.add_insecure_port(f"[::]:{port}")
+
+    if getattr(settings, "GRPC_TLS_ENABLED", False):
+        cert_file = getattr(settings, "GRPC_TLS_CERT_FILE", "")
+        key_file = getattr(settings, "GRPC_TLS_KEY_FILE", "")
+        if not cert_file or not key_file:
+            raise ValueError(
+                "GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set when TLS is enabled"
+            )
+        with open(cert_file, "rb") as f:
+            server_cert = f.read()
+        with open(key_file, "rb") as f:
+            server_key = f.read()
+
+        ca_file = getattr(settings, "GRPC_TLS_CA_FILE", "")
+        if ca_file:
+            with open(ca_file, "rb") as f:
+                ca_cert = f.read()
+            credentials = grpc.ssl_server_credentials(
+                private_key_certificate_chain_pairs=((server_key, server_cert),),
+                root_certificates=ca_cert,
+                require_client_auth=True,
+            )
+            logger.info("gRPC server using mTLS on port %s", port)
+        else:
+            credentials = grpc.ssl_server_credentials(((server_key, server_cert),))
+            logger.info("gRPC server using TLS on port %s", port)
+        server.add_secure_port(f"[::]:{port}", credentials)
+    else:
+        server.add_insecure_port(f"[::]:{port}")
+        logger.info("gRPC server started on port %s", port)
+
     await server.start()
-    logger.info(f"gRPC server started on port {port}")
     await server.wait_for_termination()

@@ -1,3 +1,4 @@
+import json
 import secrets
 import string
 import uuid
@@ -7,6 +8,8 @@ from django.db import models
 
 from apps.core.models import Organization, User
 from apps.marvins.fields import VectorField
+from services.crypto import decrypt as _decrypt
+from services.crypto import encrypt as _encrypt
 
 
 def _generate_marvin_key() -> str:
@@ -92,6 +95,57 @@ class Resource(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.resource_type.name})"
+
+    def encrypt_secrets(self, plaintext: dict | list | None) -> str:
+        """Encrypt a plaintext dict/list and return a ciphertext string."""
+        if plaintext is None or (isinstance(plaintext, dict) and not plaintext):
+            return ""
+        return _encrypt(json.dumps(plaintext))
+
+    def decrypt_secrets(self):
+        """Decrypt the stored ciphertext and return the original dict/list."""
+        val = self.secrets_encrypted
+        if isinstance(val, str) and val:
+            try:
+                return json.loads(_decrypt(val))
+            except Exception:
+                # Fallback for legacy plaintext strings
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return {}
+        return val if val is not None else {}
+
+    def save(self, *args, **kwargs):
+        plaintext = self.secrets_encrypted
+        if isinstance(plaintext, (dict, list)):
+            self.secrets_encrypted = self.encrypt_secrets(plaintext)
+        super().save(*args, **kwargs)
+        # Restore plaintext on the instance so callers never see ciphertext
+        self.secrets_encrypted = plaintext
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._decrypt_secrets_field()
+        return instance
+
+    def refresh_from_db(self, using=None, fields=None):
+        super().refresh_from_db(using=using, fields=fields)
+        self._decrypt_secrets_field()
+
+    def _decrypt_secrets_field(self):
+        val = self.secrets_encrypted
+        if isinstance(val, str) and val:
+            try:
+                self.secrets_encrypted = json.loads(_decrypt(val))
+            except Exception:
+                try:
+                    self.secrets_encrypted = json.loads(val)
+                except Exception:
+                    self.secrets_encrypted = {}
+        elif val is None or val == "":
+            self.secrets_encrypted = {}
 
 
 class MarvinResourceAttachment(models.Model):
@@ -351,6 +405,69 @@ class Marvin(models.Model):
         return f"{self.name} ({self.status})"
 
 
+class MarvinHealthMetrics(models.Model):
+    """Latest health snapshot for a Marvin, used to prefer healthy executors.
+
+    Each Marvin has at most one snapshot (``related_name="health_metrics"``).
+    Marvins without a snapshot are considered to have no health signal and are
+    ordered after those with metrics during executor selection.
+    """
+
+    objects = models.Manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    marvin = models.OneToOneField(
+        Marvin,
+        on_delete=models.CASCADE,
+        related_name="health_metrics",
+    )
+    error_rate = models.FloatField(
+        default=0.0,
+        help_text="Proportion of failed executions in the recent window (0-1).",
+    )
+    latency_ms = models.FloatField(
+        default=0.0,
+        help_text="Average execution latency in milliseconds.",
+    )
+    cpu_usage = models.FloatField(
+        default=0.0,
+        help_text="CPU utilization percentage (0-100).",
+    )
+    memory_usage = models.FloatField(
+        default=0.0,
+        help_text="Memory utilization percentage (0-100).",
+    )
+    load_average = models.FloatField(
+        default=0.0,
+        help_text="System load average (1m) reported via heartbeat.",
+    )
+    disk_usage = models.FloatField(
+        default=0.0,
+        help_text="Disk utilization fraction (0-1) reported via heartbeat.",
+    )
+    recorded_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["marvin"]
+
+    def __str__(self):
+        return f"Health metrics for {self.marvin.name}"
+
+    def get_health_score(self) -> float:
+        """Return a 0-1 health score; higher is healthier.
+
+        Reliability (error rate) dominates at 50%, resource headroom contributes
+        40%, and latency contributes 10%. Values are clamped to their expected
+        ranges so outliers cannot push the score outside [0, 1].
+        """
+        error = max(0.0, min(float(self.error_rate or 0.0), 1.0))
+        cpu = max(0.0, min(float(self.cpu_usage or 0.0), 100.0)) / 100.0
+        memory = max(0.0, min(float(self.memory_usage or 0.0), 100.0)) / 100.0
+        latency = max(0.0, min(float(self.latency_ms or 0.0), 5000.0)) / 5000.0
+        score = 1.0 - 0.5 * error - 0.2 * cpu - 0.2 * memory - 0.1 * latency
+        return round(max(0.0, min(score, 1.0)), 4)
+
+
 class MarvinConfig(models.Model):
     """Desired configuration for a Marvin agent, managed from the control plane."""
 
@@ -380,6 +497,41 @@ class MarvinConfig(models.Model):
 
     def __str__(self):
         return f"Config for {self.marvin.name}"
+
+
+class CircuitBreakerConfig(models.Model):
+    """Per-capability circuit breaker settings for command dispatch.
+
+    Keyed by capability name (global control-plane configuration). The gRPC
+    servicer tracks consecutive command failures per (capability, marvin) and
+    opens a breaker, rejecting new commands, once the threshold is reached for
+    the configured recovery window.
+    """
+
+    objects = models.Manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability_name = models.CharField(max_length=255, unique=True)
+    failure_threshold = models.PositiveIntegerField(
+        default=5,
+        help_text="Consecutive command failures before the breaker opens.",
+    )
+    recovery_timeout_seconds = models.PositiveIntegerField(
+        default=60,
+        help_text="Seconds to reject new commands after the breaker opens.",
+    )
+    enabled = models.BooleanField(
+        default=True,
+        help_text="When False, the breaker is disabled for this capability.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["capability_name"]
+
+    def __str__(self):
+        return f"CircuitBreaker({self.capability_name})"
 
 
 class MarvinRegistrationKey(models.Model):

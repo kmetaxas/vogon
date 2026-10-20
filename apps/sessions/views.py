@@ -29,6 +29,7 @@ from apps.sessions.models import (
     TSession,
 )
 from apps.sessions.temporal_utils import (
+    cancel_workflow_sync,
     complete_session_workflow_sync,
     send_message_to_workflow_sync,
     start_troubleshoot_workflow_sync,
@@ -722,6 +723,52 @@ class SessionCompleteView(OrganizationRequiredMixin, View):
         return HttpResponseRedirect(
             reverse("sessions:session-detail", kwargs={"session_id": session.id})
         )
+
+
+class SessionAbortView(OrganizationRequiredMixin, View):
+    def post(self, request, session_id):
+        session = get_object_or_404(
+            TSession,
+            id=session_id,
+            organization=self.organization,
+        )
+        if not self._can_abort(session, request.user):
+            return HttpResponseForbidden(
+                b"Only the session creator or an organization admin can abort this session."
+            )
+        session.status = TSession.Status.ABORTED
+        session.save(update_fields=["status", "updated_at"])
+
+        for thread in session.threads.all():
+            thread.tool_calls.filter(
+                status__in=[ToolCall.Status.PENDING, ToolCall.Status.IN_PROGRESS]
+            ).update(status=ToolCall.Status.FAILED)
+
+        try:
+            cancel_workflow_sync(str(session.id))
+        except Exception:
+            logger.exception(
+                "Failed to cancel Temporal workflow for session %s",
+                session.id,
+            )
+
+        if request.headers.get("HX-Request"):
+            return render(request, "sessions/_status_badge.html", {"session": session})
+
+        return HttpResponseRedirect(
+            reverse("sessions:session-detail", kwargs={"session_id": session.id})
+        )
+
+    def _can_abort(self, session, user):
+        if session.created_by_id == user.id:
+            return True
+        from apps.core.models import OrganizationMembership
+
+        return OrganizationMembership.objects.filter(
+            user=user,
+            organization_id=session.organization_id,
+            role__in=[OrganizationMembership.Role.OWNER, OrganizationMembership.Role.ADMIN],
+        ).exists()
 
 
 class ArchitectureRequestUploadView(OrganizationRequiredMixin, View):

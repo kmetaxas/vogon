@@ -22,6 +22,7 @@ django.setup()
 
 from apps.core.models import Organization
 from apps.marvins.discovery import (
+    BudgetExceeded,
     CapabilityDiscoveryError,
     CapabilityNotFound,
     DiscoveryEngine,
@@ -203,7 +204,16 @@ async def find_targets(
         org = validate_mcp_token(api_token, organization_slug)
         capability = Capability.objects.get(organization=org, name=capability_name, enabled=True)
         target_selector = TargetSelector.from_dict(selector) if selector else None
-        target_set = DiscoveryEngine().resolve_targets(org, capability, target_selector)
+        # Create a temporary session with a budget for MCP find_targets
+        from apps.sessions.models import TSession
+
+        temp_session = TSession.objects.create(
+            organization=org,
+            title=f"MCP find_targets - {capability_name}",
+        )
+        target_set = DiscoveryEngine().resolve_targets(
+            org, capability, target_selector, session=temp_session
+        )
         return _target_set_preview(target_set, limit)
     except MCPAuthError as e:
         return _unauthorized_error(e)
@@ -255,6 +265,25 @@ async def execute(
             enabled=True,
         )
 
+        # Create or use existing session/thread BEFORE resolving targets
+        # so that SessionBudget can be enforced
+        if not session_id:
+            session = TSession.objects.create(
+                organization=org,
+                title=f"MCP Session - {capability_name}",
+            )
+            session_id = str(session.id)
+
+        if not thread_id:
+            thread = Thread.objects.create(
+                tsession_id=session_id,
+                title=f"MCP Thread - {capability_name}",
+            )
+            thread_id = str(thread.id)
+
+        thread = Thread.objects.get(id=thread_id, tsession_id=session_id)
+        session = thread.tsession
+
         if target_set_id:
             try:
                 target_set = _validate_target_set(org, target_set_id)
@@ -271,34 +300,20 @@ async def execute(
                     org,
                     capability,
                     TargetSelector(labels=parse_label_selector(labels)) if labels else None,
+                    session=session,
                 )
             except SelectorRequiresResource as e:
                 return {"success": False, "error": str(e), "code": "selector_requires_resource"}
             except FanOutLimitExceeded as e:
                 return {"success": False, "error": str(e), "code": "fanout_limit_exceeded"}
+            except BudgetExceeded as e:
+                return {"success": False, "error": str(e), "code": "budget_exceeded"}
 
         marvin_ids = [str(marvin_id) for marvin_id in cast(list[Any], target_set.snapshot)]
         if not marvin_ids:
             return {"success": False, "error": "No online Marvin found for this capability"}
 
         primary_marvin = Marvin.objects.filter(organization=org, id=marvin_ids[0]).first()
-
-        # Create or use existing session/thread
-        if not session_id:
-            session = TSession.objects.create(
-                organization=org,
-                title=f"MCP Session - {capability_name}",
-            )
-            session_id = str(session.id)
-
-        if not thread_id:
-            thread = Thread.objects.create(
-                tsession_id=session_id,
-                title=f"MCP Thread - {capability_name}",
-            )
-            thread_id = str(thread.id)
-
-        thread = Thread.objects.get(id=thread_id, tsession_id=session_id)
         policy = ExecutionPolicy.from_capability(capability)
         tool_call = ToolCall.objects.create(
             thread=thread,

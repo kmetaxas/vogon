@@ -9,11 +9,10 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from django.conf import settings
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
-
-MAX_PARALLEL_TOOL_CALLS = 6
 
 
 @workflow.defn
@@ -39,6 +38,7 @@ class TroubleshootWorkflow:
         }
         self._pending_messages: list[dict] = []
         self._completion_requested = False
+        self._cancel_requested = False
 
     @workflow.signal
     async def user_message(self, message: dict) -> None:
@@ -54,6 +54,20 @@ class TroubleshootWorkflow:
     @workflow.signal
     async def complete(self) -> None:
         self._completion_requested = True
+
+    @workflow.signal
+    async def cancel(self) -> None:
+        """Request a graceful abort of the workflow."""
+        self._cancel_requested = True
+
+    async def _abort(self, session_id: str) -> None:
+        """Mark in-flight tool calls failed and set the session status to aborted."""
+        await workflow.execute_activity(
+            "abort_session",
+            args=[session_id],
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+        self.state["status"] = "aborted"
 
     @workflow.query
     def get_status(self) -> dict:
@@ -97,8 +111,16 @@ class TroubleshootWorkflow:
         while True:
             workflow.logger.info(f"Waiting for next message for session {session_id}")
             await workflow.wait_condition(
-                lambda: bool(self._pending_messages) or self._completion_requested
+                lambda: (
+                    bool(self._pending_messages)
+                    or self._completion_requested
+                    or self._cancel_requested
+                )
             )
+
+            if self._cancel_requested:
+                await self._abort(session_id)
+                break
 
             if self._pending_messages:
                 message = self._pending_messages.pop(0)
@@ -334,8 +356,11 @@ class TroubleshootWorkflow:
                             )
 
                         _all_execute_results: list[Any] = []
-                        for i in range(0, len(tool_calls), MAX_PARALLEL_TOOL_CALLS):
-                            batch = tool_calls[i : i + MAX_PARALLEL_TOOL_CALLS]
+                        for i in range(0, len(tool_calls), settings.LLM_MAX_PARALLEL_TOOL_CALLS):
+                            if self._cancel_requested:
+                                await self._abort(session_id)
+                                break
+                            batch = tool_calls[i : i + settings.LLM_MAX_PARALLEL_TOOL_CALLS]
                             batch_tasks = [
                                 workflow.execute_activity(
                                     "execute_llm_tool",
@@ -353,6 +378,9 @@ class TroubleshootWorkflow:
                                 *batch_tasks, return_exceptions=True
                             )
                             _all_execute_results.extend(batch_results)
+
+                        if self._cancel_requested:
+                            break
 
                         for tc, execute_result in zip(tool_calls, _all_execute_results):
                             if isinstance(execute_result, BaseException):
@@ -475,7 +503,11 @@ class TroubleshootWorkflow:
                         start_to_close_timeout=timedelta(seconds=10),
                     )
 
-                if not self.state["interrupted"] and not assistant_message_created:
+                if (
+                    not self.state["interrupted"]
+                    and not assistant_message_created
+                    and not self._cancel_requested
+                ):
                     assistant_args = [msg_thread_id, assistant_response]
                     if reason is None:
                         assistant_args += [
@@ -501,6 +533,9 @@ class TroubleshootWorkflow:
 
                 if self.state["status"] == "paused_waiting_for_continue":
                     continue
+
+                if self._cancel_requested:
+                    break
 
             if self._completion_requested or await workflow.execute_activity(
                 "check_completion",
@@ -748,8 +783,8 @@ class AutonomousInvestigationWorkflow:
                     )
 
                 execute_results: list[Any] = []
-                for i in range(0, len(tool_calls), MAX_PARALLEL_TOOL_CALLS):
-                    batch = tool_calls[i : i + MAX_PARALLEL_TOOL_CALLS]
+                for i in range(0, len(tool_calls), settings.LLM_MAX_PARALLEL_TOOL_CALLS):
+                    batch = tool_calls[i : i + settings.LLM_MAX_PARALLEL_TOOL_CALLS]
                     batch_results = await asyncio.gather(
                         *[
                             workflow.execute_activity(

@@ -25,7 +25,7 @@ class ExecutionPolicy(BaseModel):
         description="Default max number of target hosts.",
     )
     absolute_max_targets: int = Field(
-        default=100,
+        default=50,
         ge=1,
         le=10000,
         description="Hard max number of target hosts.",
@@ -45,6 +45,10 @@ class ExecutionPolicy(BaseModel):
     requires_resource: bool = Field(
         default=False,
         description="Whether execution requires a named resource.",
+    )
+    requires_approval_for_all_strategy: bool = Field(
+        default=True,
+        description="Whether the 'all' selection strategy requires explicit approval.",
     )
 
     @classmethod

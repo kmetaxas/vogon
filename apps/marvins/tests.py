@@ -1,6 +1,7 @@
 # pyright: reportMissingImports=false
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 from django.apps import apps
@@ -1509,6 +1510,76 @@ class ResourceTests(TransactionTestCase):
         self.assertEqual(data["global_config"]["log_level"], "DEBUG")
         self.assertEqual(data["capability_overrides"]["k8s"]["timeout"], 60)
 
+    def test_resource_secrets_encrypt_decrypt_helpers(self):
+        rt = ResourceType.objects.create(name="k8s", display_name="Kubernetes")
+        resource = Resource(organization=self.organization, name="test", resource_type=rt)
+        ciphertext = resource.encrypt_secrets({"token": "abc"})
+        self.assertIsInstance(ciphertext, str)
+        resource.secrets_encrypted = ciphertext
+        self.assertEqual(resource.decrypt_secrets(), {"token": "abc"})
+
+    def test_resource_secrets_round_trip(self):
+        rt = ResourceType.objects.create(name="k8s", display_name="Kubernetes")
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-k8s",
+            resource_type=rt,
+            secrets_encrypted={"token": "abc123"},
+        )
+        self.assertEqual(resource.secrets_encrypted, {"token": "abc123"})
+        resource.refresh_from_db()
+        self.assertEqual(resource.secrets_encrypted, {"token": "abc123"})
+
+    def test_resource_secrets_encryption_at_rest(self):
+        from services.crypto import decrypt
+
+        rt = ResourceType.objects.create(name="k8s", display_name="Kubernetes")
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-k8s",
+            resource_type=rt,
+            secrets_encrypted={"token": "abc123"},
+        )
+        raw = Resource.objects.filter(id=resource.id).values_list("secrets_encrypted", flat=True)[0]
+        self.assertIsInstance(raw, str)
+        self.assertEqual(json.loads(decrypt(raw)), {"token": "abc123"})
+
+    def test_config_assembly_includes_decrypted_secrets(self):
+        from apps.marvins.config_assembly import assemble_marvin_config
+
+        rt = ResourceType.objects.create(
+            name="kubernetes",
+            display_name="Kubernetes Cluster",
+            capability_names=["k8s"],
+        )
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-k8s",
+            resource_type=rt,
+            config={"endpoint": "https://k8s.prod"},
+            secrets_encrypted={"token": "supersecret"},
+        )
+        marvin = Marvin.objects.create(
+            organization=self.organization,
+            name="Worker",
+            client_id="worker-1",
+        )
+        marvin.attached_resources.add(resource)
+
+        config = assemble_marvin_config(marvin)
+        self.assertEqual(config["resources"][0]["secrets"], {"token": "supersecret"})
+
+    def test_resource_secrets_empty_dict_is_stored_as_empty(self):
+        rt = ResourceType.objects.create(name="k8s", display_name="Kubernetes")
+        resource = Resource.objects.create(
+            organization=self.organization,
+            name="prod-k8s",
+            resource_type=rt,
+            secrets_encrypted={},
+        )
+        resource.refresh_from_db()
+        self.assertEqual(resource.secrets_encrypted, {})
+
 
 class DiscoveryEngineTests(TransactionTestCase):
     def setUp(self):
@@ -1571,6 +1642,85 @@ class DiscoveryEngineTests(TransactionTestCase):
             3,
         )
         self.assertGreaterEqual(len(ordered), 3)
+
+
+class SelectExecutorTests(TransactionTestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(name="SelectExec", slug="selectexec")
+        self.Marvin = apps.get_model("marvins", "Marvin")
+        self.MarvinHealthMetrics = apps.get_model("marvins", "MarvinHealthMetrics")
+
+    def _make_marvin(self, client_id, metrics):
+        marvin = self.Marvin.objects.create(
+            organization=self.organization,
+            name=client_id,
+            client_id=client_id,
+            status="online",
+        )
+        if metrics is not None:
+            self.MarvinHealthMetrics.objects.create(marvin=marvin, **metrics)
+        return marvin
+
+    def test_preferred_selects_healthiest_first(self):
+        unhealthy = self._make_marvin("unhealthy", {"error_rate": 1.0})
+        ok = self._make_marvin("ok", {"error_rate": 0.5})
+        healthy = self._make_marvin("healthy", {"error_rate": 0.0})
+
+        selected = DiscoveryEngine.select_executors([unhealthy, ok, healthy], "preferred")
+
+        self.assertEqual(selected, [healthy, ok, unhealthy])
+
+    def test_preferred_returns_all_eligible(self):
+        self._make_marvin("a", {"error_rate": 0.0})
+        self._make_marvin("b", {"error_rate": 0.0})
+        self._make_marvin("c", {"error_rate": 0.0})
+
+        marvins = list(self.Marvin.objects.filter(organization=self.organization))
+        selected = DiscoveryEngine.select_executors(marvins, "preferred")
+
+        self.assertEqual(len(selected), 3)
+
+    def test_leader_selects_healthiest(self):
+        unhealthy = self._make_marvin("unhealthy", {"error_rate": 1.0})
+        healthy = self._make_marvin("healthy", {"error_rate": 0.0})
+
+        selected = DiscoveryEngine.select_executors([unhealthy, healthy], "leader")
+
+        self.assertEqual(selected, [healthy])
+
+    def test_one_falls_back_to_uuid_without_metrics(self):
+        m1 = self._make_marvin("worker-1", None)
+        m2 = self._make_marvin("worker-2", None)
+
+        expected = sorted([m1, m2], key=lambda marvin: str(marvin.id))[0]
+        selected = DiscoveryEngine.select_executors([m1, m2], "one")
+
+        self.assertEqual(selected, [expected])
+
+    def test_one_selects_healthiest_with_metrics(self):
+        unhealthy = self._make_marvin("unhealthy", {"error_rate": 1.0})
+        healthy = self._make_marvin("healthy", {"error_rate": 0.0})
+
+        selected = DiscoveryEngine.select_executors([unhealthy, healthy], "one")
+
+        self.assertEqual(selected, [healthy])
+
+    def test_all_and_quorum_preserve_uuid_order(self):
+        m1 = self._make_marvin("worker-1", None)
+        m2 = self._make_marvin("worker-2", None)
+        m3 = self._make_marvin("worker-3", None)
+
+        by_uuid = sorted([m1, m2, m3], key=lambda marvin: str(marvin.id))
+
+        self.assertEqual(DiscoveryEngine.select_executors([m3, m1, m2], "all"), by_uuid)
+        self.assertEqual(DiscoveryEngine.select_executors([m3, m1, m2], "quorum"), by_uuid[:2])
+
+    def test_health_score_higher_for_healthier_marvin(self):
+        healthy = self.MarvinHealthMetrics(error_rate=0.0, cpu_usage=0.0, memory_usage=0.0)
+        unhealthy = self.MarvinHealthMetrics(error_rate=1.0, cpu_usage=100.0, memory_usage=100.0)
+
+        self.assertGreater(healthy.get_health_score(), unhealthy.get_health_score())
+        self.assertEqual(healthy.get_health_score(), 1.0)
 
 
 class CapabilityModelTests(TransactionTestCase):
@@ -2011,3 +2161,121 @@ class MarvinSerializerTests(TransactionTestCase):
         self.assertEqual(data["labels"], {"env": "development", "team": "platform", "canary": None})
         self.assertEqual(data["host_metadata"]["client_id"], "test-1")
         self.assertEqual(data["host_metadata"]["hostname"], "host1")
+
+
+class ExecutionPolicyDefaultsTests(TestCase):
+    def test_absolute_max_targets_default_is_50(self):
+        from apps.marvins.policies import ExecutionPolicy
+
+        policy = ExecutionPolicy()
+        self.assertEqual(policy.absolute_max_targets, 50)
+
+    def test_requires_approval_for_all_strategy_default_is_true(self):
+        from apps.marvins.policies import ExecutionPolicy
+
+        policy = ExecutionPolicy()
+        self.assertTrue(policy.requires_approval_for_all_strategy)
+
+
+class AllStrategyGatingTests(TransactionTestCase):
+    def test_all_strategy_blocked_when_requires_approval(self):
+        org = Organization.objects.create(name="Gating Org", slug="gating-org")
+        user = User.objects.create_user(username="gating-user", password="pass")
+        capability = Capability.objects.create(
+            organization=org,
+            name="test.all.gated",
+            description="Test",
+            selection_strategy="all",
+        )
+        from apps.marvins.discovery import DiscoveryEngine, FanOutLimitExceeded
+
+        engine = DiscoveryEngine()
+        with self.assertRaises(FanOutLimitExceeded) as ctx:
+            engine.resolve_targets(org, capability, user=user)
+        self.assertIn("requires approval", str(ctx.exception).lower())
+
+    def test_all_strategy_allowed_with_permission(self):
+        org = Organization.objects.create(name="Gating Org 2", slug="gating-org-2")
+        user = User.objects.create_user(username="gating-user-2", password="pass")
+        # Grant permission
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        ct, _ = ContentType.objects.get_or_create(app_label="marvins", model="capability")
+        perm, _ = Permission.objects.get_or_create(
+            codename="can_execute_all_strategy",
+            content_type=ct,
+            defaults={"name": "Can execute all strategy"},
+        )
+        user.user_permissions.add(perm)
+        user = User.objects.get(pk=user.pk)  # refresh permissions
+        capability = Capability.objects.create(
+            organization=org,
+            name="test.all.allowed",
+            description="Test",
+            selection_strategy="all",
+        )
+        from apps.marvins.discovery import DiscoveryEngine
+
+        engine = DiscoveryEngine()
+        # Should not raise (empty target set is fine)
+        target_set = engine.resolve_targets(org, capability, user=user)
+        self.assertIsNotNone(target_set)
+
+
+class CleanupExpiredTargetSetsTests(TestCase):
+    def test_expired_target_sets_are_deleted(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.marvins.management.commands.cleanup_expired_target_sets import Command
+        from apps.marvins.models import Capability, Organization, ResolvedTargetSet
+
+        org = Organization.objects.create(name="Cleanup Org", slug="cleanup-org")
+        capability = Capability.objects.create(
+            organization=org, name="test.cleanup", description="Test"
+        )
+
+        # Create an expired target set
+        expired = ResolvedTargetSet.objects.create(
+            organization=org,
+            capability=capability,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        # Create a future target set
+        future = ResolvedTargetSet.objects.create(
+            organization=org,
+            capability=capability,
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        cmd = Command()
+        cmd.handle()
+
+        self.assertFalse(ResolvedTargetSet.objects.filter(id=expired.id).exists())
+        self.assertTrue(ResolvedTargetSet.objects.filter(id=future.id).exists())
+
+    def test_dry_run_does_not_delete(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.marvins.management.commands.cleanup_expired_target_sets import Command
+        from apps.marvins.models import Capability, Organization, ResolvedTargetSet
+
+        org = Organization.objects.create(name="Cleanup Org 2", slug="cleanup-org-2")
+        capability = Capability.objects.create(
+            organization=org, name="test.cleanup2", description="Test"
+        )
+
+        expired = ResolvedTargetSet.objects.create(
+            organization=org,
+            capability=capability,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        cmd = Command()
+        cmd.handle(dry_run=True)
+
+        self.assertTrue(ResolvedTargetSet.objects.filter(id=expired.id).exists())

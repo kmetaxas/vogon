@@ -21,7 +21,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         expired = ResolvedTargetSet.objects.filter(expires_at__lt=timezone.now())
         count = expired.count()
-        if options["dry_run"]:
+        if options.get("dry_run"):
             self.stdout.write(f"Would delete {count} expired target sets (dry-run).")
         else:
             expired.delete()

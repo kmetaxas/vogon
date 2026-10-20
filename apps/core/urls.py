@@ -22,4 +22,9 @@ urlpatterns = [
         views.OrganizationMemberRoleUpdateView.as_view(),
         name="org-member-role-update",
     ),
+    path(
+        "org/emergency-brake/",
+        views.OrganizationEmergencyBrakeToggleView.as_view(),
+        name="org-emergency-brake-toggle",
+    ),
 ]

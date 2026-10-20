@@ -47,6 +47,7 @@ def assemble_marvin_config(marvin: Marvin) -> dict[str, Any]:
             "name": resource.name,
             "type": resource.resource_type.name,
             "config": resource.config,
+            "secrets": resource.secrets_encrypted,
         }
         config["resources"].append(resource_entry)
 
@@ -54,6 +55,9 @@ def assemble_marvin_config(marvin: Marvin) -> dict[str, Any]:
         for cap_name in resource.resource_type.capability_names:
             if cap_name in config["capabilities"]:
                 _deep_merge(config["capabilities"][cap_name], resource.config)
+                secrets = resource.secrets_encrypted
+                if secrets:
+                    _deep_merge(config["capabilities"][cap_name], secrets)
 
     return config
 

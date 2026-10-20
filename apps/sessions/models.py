@@ -17,6 +17,7 @@ class TSession(models.Model):
         PAUSED = "paused", "Paused"
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
+        ABORTED = "aborted", "Aborted"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(

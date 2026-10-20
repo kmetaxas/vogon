@@ -66,6 +66,27 @@ class BudgetExceeded(Exception):  # noqa: N818
     pass
 
 
+class OrgConcurrencyLimitExceeded(Exception):  # noqa: N818
+    """Raised when an organization's concurrent execution ceiling is reached."""
+
+    pass
+
+
+def check_org_concurrent_execution_limit(organization):
+    """Check if the organization has reached its concurrent execution ceiling."""
+    from apps.sessions.models import ToolCall
+
+    in_progress_count = ToolCall.objects.filter(
+        thread__tsession__organization=organization,
+        status__in=[ToolCall.Status.PENDING, ToolCall.Status.IN_PROGRESS],
+    ).count()
+    if in_progress_count >= organization.max_concurrent_executions:
+        raise OrgConcurrencyLimitExceeded(
+            f"Organization has reached its concurrent execution limit "
+            f"({organization.max_concurrent_executions})."
+        )
+
+
 def check_and_reserve_budget(session: Any, target_count: int) -> SessionBudget:
     with atomic():
         locked_session = session.__class__._default_manager.select_for_update().get(pk=session.pk)

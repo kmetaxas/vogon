@@ -384,6 +384,8 @@ class DiscoveryEngine:
         capability: Capability | str,
         selector: TargetSelector | dict[str, Any] | None = None,
         session_scope: Any = None,
+        user: Any = None,
+        session: Any = None,
     ) -> ResolvedTargetSet:
         """Resolve a capability and selector into an immutable target-set snapshot."""
         capability = self._get_capability(organization, capability)
@@ -397,7 +399,7 @@ class DiscoveryEngine:
             self._apply_selector(
                 self._base_marvin_queryset(organization, capability), merged_selector
             )
-            .prefetch_related("resource_attachments__resource__resource_type")
+            .prefetch_related("resource_attachments__resource__resource_type", "health_metrics")
             .order_by("id")
             .distinct()
         )
@@ -411,7 +413,16 @@ class DiscoveryEngine:
             for executor in executors:
                 selected[str(executor.id)] = executor
 
-        self.check_execution_policy(organization, capability, len(selected))
+        policy = ExecutionPolicy.from_capability(capability)
+        if capability.selection_strategy == "all" and policy.requires_approval_for_all_strategy:
+            if user is None or not user.has_perm("marvins.can_execute_all_strategy"):
+                raise FanOutLimitExceeded(
+                    f"Capability {capability.name} uses selection_strategy='all' "
+                    f"which requires approval. "
+                    "Contact your organization admin to enable this strategy."
+                )
+
+        self.check_execution_policy(organization, capability, len(selected), session=session)
         selected_marvins = list(selected.values())
         snapshot = list(selected.keys())
         metadata = {
@@ -438,13 +449,34 @@ class DiscoveryEngine:
 
     @staticmethod
     def select_executors(marvins: Iterable[Marvin], strategy: str) -> list[Marvin]:
-        """Select executors deterministically by lexicographic Marvin UUID."""
+        """Select executors for a target by strategy.
+
+        ``all`` and ``quorum`` use deterministic UUID ordering. ``preferred``
+        returns every eligible Marvin ordered healthiest-first, while ``leader``
+        and ``one`` select a single (healthiest) executor. All health-aware
+        strategies fall back to UUID ordering when no health metrics exist.
+        """
         ordered = sorted(marvins, key=lambda marvin: str(marvin.id))
         if strategy == "all":
             return ordered
         if strategy == "quorum":
             return ordered[: math.ceil(len(ordered) / 2)]
-        return ordered[:1]
+        if strategy == "preferred":
+            return DiscoveryEngine._sort_by_health(ordered)
+        return DiscoveryEngine._sort_by_health(ordered)[:1]
+
+    @staticmethod
+    def _sort_by_health(marvins: Iterable[Marvin]) -> list[Marvin]:
+        """Sort Marvins healthiest-first, using UUID order as a stable tie-break."""
+        return sorted(marvins, key=DiscoveryEngine._health_sort_key)
+
+    @staticmethod
+    def _health_sort_key(marvin: Marvin) -> tuple[bool, float, str]:
+        """Return a sort key: measured first, then higher score, then UUID."""
+        metrics = getattr(marvin, "health_metrics", None)
+        has_metrics = metrics is not None
+        score = float(metrics.get_health_score()) if has_metrics else 0.0
+        return (not has_metrics, -score, str(marvin.id))
 
     def check_execution_policy(
         self,
@@ -454,6 +486,15 @@ class DiscoveryEngine:
         session: Any = None,
     ) -> tuple[ExecutionPolicy, SessionBudget | None]:
         """Validate execution and optional session-budget limits."""
+        from apps.sessions.budget import (
+            OrgConcurrencyLimitExceeded,
+            check_org_concurrent_execution_limit,
+        )
+
+        try:
+            check_org_concurrent_execution_limit(organization)
+        except OrgConcurrencyLimitExceeded:
+            raise FanOutLimitExceeded("Organization concurrent execution ceiling reached.")
         policy = ExecutionPolicy.from_capability(capability)
         if target_count > policy.absolute_max_targets:
             raise FanOutLimitExceeded(
