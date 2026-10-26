@@ -11,7 +11,7 @@
 {% endif %}
 {% for item in items %}
 {% if item.type == 'tool_group' %}
-<div class="agent-event agent-event-tool_group" data-created-at="{{ item.created_at }}">
+<div class="agent-event agent-event-tool_group" data-created-at="{{ item.created_at }}" data-item-id="{{ item.id }}">
     <details>
         <summary>{{ item.label }}</summary>
         <div class="tool-request">
@@ -31,7 +31,7 @@
     </details>
 </div>
 {% elif item.type == 'event' %}
-<div class="agent-event agent-event-{{ item.kind }}" data-created-at="{{ item.created_at }}">
+<div class="agent-event agent-event-{{ item.kind }}" data-created-at="{{ item.created_at }}" data-item-id="{{ item.id }}">
     {% if item.kind == 'error' %}
         <span class="error">&#9888; {{ item.label }}</span>
     {% else %}
@@ -39,7 +39,7 @@
     {% endif %}
 </div>
 {% elif item.type == 'progress' %}
-<div class="agent-progress-box{% if not item.detail.active %} agent-progress-box-complete{% endif %}" data-created-at="{{ item.created_at }}">
+<div class="agent-progress-box{% if not item.detail.active %} agent-progress-box-complete{% endif %}" data-created-at="{{ item.created_at }}" data-item-id="{{ item.id }}">
     <details>
         <summary>
             {% if item.detail.active %}
@@ -96,7 +96,7 @@
     </details>
 </div>
 {% else %}
-<div class="chat-message chat-message-{{ item.role }}" data-created-at="{{ item.created_at }}">
+<div class="chat-message chat-message-{{ item.role }}" data-created-at="{{ item.created_at }}" data-item-id="{{ item.id }}">
     <div style="font-size: 0.75rem; font-weight: 500; margin-bottom: var(--spacing-xs); opacity: 0.7;">
         {{ item.role|title }}
     </div>
