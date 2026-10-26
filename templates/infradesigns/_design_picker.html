@@ -1,6 +1,6 @@
 {% load static %}
 {% if designs %}
-<div class="design-picker-dropdown">
+<div class="design-picker-list">
   {% for design in designs %}
   <div class="design-picker-item" data-design-id="{{ design.id }}" data-design-name="{{ design.name }}">
     <span class="design-picker-name">{{ design.name }}</span>
@@ -9,7 +9,7 @@
   {% endfor %}
 </div>
 {% else %}
-<div class="design-picker-dropdown">
+<div class="design-picker-list">
   <div class="empty-state" style="padding:var(--spacing-md);">No designs available.</div>
 </div>
 {% endif %}
