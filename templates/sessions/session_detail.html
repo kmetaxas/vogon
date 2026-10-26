@@ -74,13 +74,19 @@
                 if (visiblePane) target = visiblePane.querySelector('[data-thread-messages="true"]');
             }
             if (target && msg.payload && msg.payload.html) {
+                var shouldAutoScroll = target.scrollTop + target.clientHeight >= target.scrollHeight - 80;
+                var savedScrollTop = target.scrollTop;
                 recordOpenDetails(target);
                 target.innerHTML = msg.payload.html;
                 if (window.htmx) htmx.process(target);
                 restoreOpenDetails(target);
                 openDetailsState.clear();
                 if (threadId === activeThreadId) {
-                    scrollActiveThreadToBottom();
+                    if (shouldAutoScroll) {
+                        scrollActiveThreadToBottom();
+                    } else {
+                        target.scrollTop = savedScrollTop;
+                    }
                 }
             }
             var card = document.getElementById('following-card-' + threadId);
@@ -125,19 +131,19 @@
         var detailsList = container.querySelectorAll('details');
         detailsList.forEach(function(d) {
             if (d.open) {
-                var parent = d.closest('[data-created-at]');
+                var parent = d.closest('[data-item-id]');
                 if (parent) {
-                    openDetailsState.add(parent.getAttribute('data-created-at'));
+                    openDetailsState.add(parent.getAttribute('data-item-id'));
                 }
             }
         });
     }
 
     function restoreOpenDetails(container) {
-        var parents = container.querySelectorAll('[data-created-at]');
+        var parents = container.querySelectorAll('[data-item-id]');
         parents.forEach(function(parent) {
-            var createdAt = parent.getAttribute('data-created-at');
-            if (openDetailsState.has(createdAt)) {
+            var itemId = parent.getAttribute('data-item-id');
+            if (openDetailsState.has(itemId)) {
                 var details = parent.querySelectorAll('details');
                 details.forEach(function(d) { d.open = true; });
             }
