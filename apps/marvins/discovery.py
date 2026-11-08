@@ -16,7 +16,13 @@ from django.db.models import Count, Q
 from django.db.transaction import atomic
 from django.utils import timezone
 
-from apps.marvins.labels import LabelSelectorError, parse_label_selector
+from apps.marvins.labels import (
+    LabelSelectorError,
+    label_matches,
+    labels_as_dict,
+    marvin_matches_labels,
+    parse_label_selector,
+)
 from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
 from apps.marvins.policies import ExecutionPolicy
 from apps.marvins.selectors import TargetSelector
@@ -69,7 +75,8 @@ def _extract_sample_labels(marvins: Iterable[Any], max_samples: int = 10) -> lis
     labels: list[str] = []
     seen: set[str] = set()
     for marvin in marvins:
-        for label in marvin.labels or []:
+        for key, value in _labels_as_dict(marvin.labels).items():
+            label = key if value is None else f"{key}:{value}"
             if label not in seen:
                 seen.add(label)
                 labels.append(label)
@@ -107,32 +114,41 @@ def _coerce_selector(selector: Any) -> TargetSelector:
         return TargetSelector.from_dict(selector.selector or {})
     if isinstance(selector, dict):
         return TargetSelector.from_dict(selector)
-    return TargetSelector.from_dict(dict(selector))
+    if isinstance(selector, str):
+        return TargetSelector(labels=parse_label_selector(selector))
+    raise ValueError("Selector must be a mapping or legacy label string")
 
 
 def _labels_as_dict(labels: Iterable[str] | None) -> dict[str, str | None]:
     """Convert Marvin label strings into a key/value map."""
-    parsed: dict[str, str | None] = {}
-    for label in labels or []:
-        if ":" in label:
-            key, value = label.split(":", 1)
-            parsed[key] = value
-        else:
-            parsed[label] = None
-    return parsed
+    try:
+        return labels_as_dict(labels)
+    except LabelSelectorError:
+        return {}
 
 
-def _label_matches(actual: dict[str, str | None], wanted: dict[str, Any]) -> bool:
-    """Return whether parsed Marvin labels satisfy selector label constraints."""
-    for key, value in wanted.items():
-        if key not in actual:
-            return False
-        if value is None:
-            continue
-        allowed = value if isinstance(value, list) else [value]
-        if actual[key] not in allowed:
-            return False
-    return True
+_label_matches = label_matches
+
+
+def _label_inventory(marvins: Iterable[Any]) -> dict[str, Any]:
+    """Bounded actual-label inventory for the already scoped candidate set."""
+    keys: dict[str, set[str]] = {}
+    truncated = False
+    for marvin in marvins:
+        for key, value in _labels_as_dict(marvin.labels).items():
+            if key not in keys and len(keys) >= 128:
+                truncated = True
+                continue
+            values = keys.setdefault(key, set())
+            if value is not None:
+                if value not in values and len(values) >= 32:
+                    truncated = True
+                else:
+                    values.add(value)
+    return {
+        "keys": {key: sorted(values) for key, values in sorted(keys.items())},
+        "truncated": truncated,
+    }
 
 
 def _selector_has_resource_constraint(selector: dict[str, Any]) -> bool:
@@ -220,6 +236,7 @@ class DiscoveryEngine:
                     "environments": environments,
                     "clusters": clusters or regions,
                     "sample_labels": _extract_sample_labels(marvins),
+                    "label_inventory": _label_inventory(marvins),
                     "search_method": search_method,
                 }
                 if score is not None:
@@ -238,10 +255,10 @@ class DiscoveryEngine:
     def _apply_capability_filters(self, queryset: Any, filters: dict[str, Any]) -> Any:
         """Apply capability-level filters (providers, scopes) to a queryset."""
         providers = filters.get("providers")
-        if providers:
+        if providers is not None:
             queryset = queryset.filter(provider__in=providers)
         scopes = filters.get("scopes")
-        if scopes:
+        if scopes is not None:
             queryset = queryset.filter(execution_scope__in=scopes)
         return queryset
 
@@ -426,6 +443,18 @@ class DiscoveryEngine:
             },
         }
 
+        if not snapshot:
+            base = self._base_marvin_queryset(organization, capability)
+            metadata["diagnostics"] = {
+                "effective_selector": merged_selector,
+                "stage_counts": {
+                    "online_capability_candidates": base.count(),
+                    "selector_matches": len(marvins),
+                    "logical_targets": len(logical_targets),
+                    "selected_executors": len(snapshot),
+                },
+            }
+
         return ResolvedTargetSet.objects.create(
             organization=organization,
             capability=capability,
@@ -538,7 +567,7 @@ class DiscoveryEngine:
             matched_ids = [
                 marvin.id
                 for marvin in queryset.only("id", "labels")
-                if _label_matches(_labels_as_dict(marvin.labels), labels)
+                if marvin_matches_labels(marvin, labels)
             ]
             queryset = queryset.filter(id__in=matched_ids)
 

@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-logger = logging.getLogger(__name__)
+from apps.marvins.labels import normalize_labels
 
 # A single label value: a list of allowed values, a scalar, or an explicit
-# "any" marker (None means no filtering on this label).
+# presence marker (None requires this label key, with any value).
 _LabelValue = list[str] | str | None
 
 
 def _to_list(value: _LabelValue) -> list[str]:
-    """Normalize a label value to a list; ``None`` (any) yields an empty list."""
+    """Normalize a value to a list; presence is handled separately during merging."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -32,7 +32,49 @@ class TargetSelector(BaseModel):
     matches everything (AND semantics are applied during merges).
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def validate_shape(cls, value: Any, info: Any) -> Any:
+        if value is None:
+            return None
+        if info.field_name == "labels":
+            if not isinstance(value, dict):
+                raise ValueError("labels must be a mapping")
+            result: dict[str, _LabelValue] = {}
+            total_size = 0
+            for key, allowed in value.items():
+                if not isinstance(key, str) or ":" in key:
+                    raise ValueError("Invalid label key")
+                key = normalize_labels([key])[0]
+                if key in result:
+                    raise ValueError("Duplicate normalized label key")
+                if allowed is None:
+                    result[key] = None
+                    continue
+                items = allowed if isinstance(allowed, list) else [allowed]
+                if len(items) > 128:
+                    raise ValueError("At most 128 allowed values per label")
+                values = []
+                for item in items:
+                    if not isinstance(item, str):
+                        raise ValueError("Label values must be strings")
+                    values.append(normalize_labels([f"{key}:{item}"])[0].split(":", 1)[1])
+                    total_size += len(key.encode("utf-8")) + len(values[-1].encode("utf-8"))
+                    if total_size > 16384:
+                        raise ValueError("Label constraints exceed 16 KiB")
+                result[key] = values if isinstance(allowed, list) else values[0]
+            normalize_labels(result.keys())
+            return result
+        if not isinstance(value, list) or any(
+            not isinstance(v, str) or not v.strip() for v in value
+        ):
+            raise ValueError("Selector fields must be lists of nonempty strings")
+        values = [v.strip() for v in value]
+        if info.field_name in {"marvin_ids", "resource_ids"}:
+            values = [str(UUID(v)) for v in values]
+        return values
 
     hostname: list[str] | None = Field(default=None, description="Allowed hostnames.")
     region: list[str] | None = Field(default=None, description="Allowed regions.")
@@ -56,19 +98,11 @@ class TargetSelector(BaseModel):
     def from_dict(cls, data: Mapping[str, Any]) -> TargetSelector:
         """Build a TargetSelector from an arbitrary dict.
 
-        Unknown keys are dropped (and logged as a warning); known ``None``
-        entries are kept so callers can distinguish "unset" from "set".
+        Unknown keys and malformed shapes are rejected, never ignored.
         """
-        if not data:
-            return cls()
-        known = set(cls.model_fields)
-        payload: dict[str, Any] = {}
-        for key, value in data.items():
-            if key in known:
-                payload[key] = value
-            else:
-                logger.warning("Ignoring unknown TargetSelector key %r", key)
-        return cls(**payload)
+        if not isinstance(data, Mapping):
+            raise ValueError("Selector must be a mapping")
+        return cls(**dict(data))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain dict, omitting fields whose value is ``None``."""
@@ -101,7 +135,7 @@ class TargetSelector(BaseModel):
     ) -> dict[str, _LabelValue]:
         """Merge two label maps using AND semantics per label key.
 
-        Each value is normalized to a list (``None`` means "any"). When both
+        Each value is normalized to a list (``None`` means presence). When both
         sides constrain the same label, the lists are intersected. A scalar
         (``str``) is treated as a single-element list.
         """

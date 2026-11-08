@@ -1,5 +1,6 @@
 from django.conf import settings
 
+from apps.marvins.selectors import TargetSelector
 from services.llm.base import ToolSpec
 
 _TOOL_SPECS = [
@@ -38,8 +39,9 @@ _TOOL_SPECS = [
                         "Examples: 'env:development' or "
                         "'env:production,team:platform'. You can only match "
                         "actual labels set on Marvins (e.g. env, team, "
-                        "cluster). You CANNOT use metadata fields like "
-                        "client_id, hostname, provider, or region as labels. "
+                        "cluster). Use selector.hostname, selector.provider or "
+                        "selector.region for host metadata. "
+                        "Literal labels must be registered keys. "
                         "Omit to target all online Marvins with this capability."
                     ),
                 },
@@ -61,7 +63,7 @@ _TOOL_SPECS = [
         name="execute_tool",
         description=(
             "Execute a capability on a Marvin agent. Route to "
-            "the correct Dave(s) using a label selector. Use "
+            "the correct Marvin agent(s) using a label selector. Use "
             "find_tools first to discover the capability name and schema."
         ),
         parameters={
@@ -78,8 +80,9 @@ _TOOL_SPECS = [
                         "Examples: 'env:development' or "
                         "'env:production,team:platform'. You can only match "
                         "actual labels set on Marvins (e.g. env, team, "
-                        "cluster). You CANNOT use metadata fields like "
-                        "client_id, hostname, provider, or region as labels. "
+                        "cluster). Use selector.hostname, selector.provider or "
+                        "selector.region for host metadata. "
+                        "Literal labels must be registered keys. "
                         "Omit to search across all online Marvins."
                     ),
                 },
@@ -128,6 +131,29 @@ _TOOL_SPECS = [
         },
     ),
 ]
+
+# Share the canonical selector schema so unknown keys cannot broaden targeting.
+_selector_schema = TargetSelector.model_json_schema()
+for _spec in _TOOL_SPECS:
+    if _spec.name in {"find_tools", "execute_tool"}:
+        _spec.parameters["properties"]["selector"] = _selector_schema
+    if _spec.name == "execute_tool":
+        _spec.parameters["properties"]["expected_target_count"] = {"type": "integer", "minimum": 1}
+_TOOL_SPECS.append(
+    ToolSpec(
+        name="find_targets",
+        description="Preview capability targets, metadata and labels without reserving budget.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "capability_name": {"type": "string"},
+                "selector": _selector_schema,
+                "limit": {"type": "integer", "minimum": 1, "default": 50},
+            },
+            "required": ["capability_name"],
+        },
+    )
+)
 
 _PROMETHEUS_TOOL_SPECS = [
     ToolSpec(

@@ -1538,7 +1538,7 @@ class TemporalFanoutActivityTests(TransactionTestCase):
         assert tool_call.capability == capability
         assert tool_call.thread == thread
         assert tool_call.parameters == {"path": "/var/log/app.log"}
-        assert tool_call.labels == {"env": "prod"}
+        assert tool_call.labels == {"labels": {"env": "prod"}}
         assert tool_call.marvin == marvins[0]
         assert tool_call.timeout_seconds == 45
         assert tool_call.status == ToolCall.Status.IN_PROGRESS
@@ -1579,12 +1579,15 @@ class TemporalFanoutActivityTests(TransactionTestCase):
         assert tool_call is None
         assert marvin_ids == []
         assert error == {
-            "error": (
-                f"No online Marvin found for capability '{capability.name}' with matching labels"
-            )
+            "error": "No matching target",
+            "code": "no_matching_target",
+            "matched_count": 0,
+            "selector": target_set.selector,
+            "metadata": target_set.snapshot_metadata,
         }
         assert ToolCall.objects.count() == 0
-        release_budget.assert_called_once_with(thread.tsession, 0)
+        engine.check_execution_policy.assert_not_called()
+        release_budget.assert_not_called()
 
     def test_create_executions_creates_pending_rows_in_result_index_order(self):
         _user, _organization, _session, thread, capability, marvins, _target_set = (
@@ -1834,7 +1837,8 @@ class AgentErrorTests(TransactionTestCase):
 
         self.assertIsNone(result["db_tool_call_id"])
         self.assertIn("error", result["result"])
-        self.assertIn("No online Marvin found", result["result"]["error"])
+        self.assertEqual(result["result"]["code"], "capability_not_found")
+        self.assertIn("Capability not found", result["result"]["error"])
 
     @patch("services.llm.registry.get_llm_client")
     def test_call_llm_handles_api_error(self, mock_get_client):

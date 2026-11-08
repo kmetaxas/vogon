@@ -356,11 +356,18 @@ SYSTEM_PROMPT = (
     "Be concise and actionable. "
     "When looking for capabilities, you can use natural-language queries with find_tools "
     "(e.g., 'why is this Kafka consumer falling behind?', 'high CPU on a pod', "
-    "'disk full warnings')."
+    "'disk full warnings'). "
     "At your disposal, you have agents running on the infrastructure. "
     "These provide investigative and testing capabilities that can be looked-up with "
     "find_tools() and then executed. "
-    "When multiple independent tools are needed, request them all at once isntead of one at a time"
+    'For Marvin targeting, use selector={"hostname": ["kill9eu"]} for host metadata, '
+    'or selector={"labels": {"team": "platform"}} for actual deployment labels. '
+    "Metadata and labels are separate; Designs can explain custom labels. "
+    "Preview with find_targets before execution. To select one specific Marvin, use its "
+    "returned UUID in selector.marvin_ids and expected_target_count=1. "
+    "Session scope still applies. Do not broaden targeting after an empty match; "
+    "inspect the selector and diagnostics instead. "
+    "When multiple independent tools are needed, request them all at once instead of one at a time."
 )
 
 
@@ -792,6 +799,16 @@ async def execute_llm_tool(
             limit=args.get("limit", 10),
             capability_name=args.get("capability_name"),
             filters=args.get("filters"),
+            selector=args.get("selector"),
+            session_scope=thread.tsession.target_scope if thread else None,
+        )
+    elif name == "find_targets":
+        return await sync_to_async(_find_targets)(
+            org,
+            args.get("capability_name"),
+            args.get("selector"),
+            thread.tsession.target_scope if thread else None,
+            args.get("limit", 50),
         )
     elif name == "execute_tool":
         if not thread:
@@ -872,26 +889,113 @@ async def execute_llm_tool(
         return {"error": f"Unknown tool {name}"}
 
 
+def _target_selector(labels=None, selector=None, session_scope=None):
+    from apps.marvins.labels import parse_label_selector
+    from apps.marvins.selectors import TargetSelector
+
+    if labels is not None and not isinstance(labels, str):
+        raise ValueError("labels must be a string")
+    if labels is not None and selector is not None:
+        raise ValueError("labels and selector are mutually exclusive")
+    requested = TargetSelector.from_dict(
+        selector
+        if selector is not None
+        else {"labels": parse_label_selector(labels)} if labels else {}
+    )
+    scope = getattr(session_scope, "selector", session_scope)
+    return TargetSelector.from_dict(scope or {}).merge_with(requested)
+
+
+def _targeting_error(exc):
+    from apps.marvins.discovery import (
+        BudgetExceeded,
+        CapabilityNotFound,
+        FanOutLimitExceeded,
+        SelectorRequiresResource,
+    )
+
+    code = "discovery_error"
+    for kind, value in (
+        (ValueError, "invalid_selector"),
+        (CapabilityNotFound, "capability_not_found"),
+        (SelectorRequiresResource, "selector_requires_resource"),
+        (FanOutLimitExceeded, "fanout_limit_exceeded"),
+        (BudgetExceeded, "budget_exceeded"),
+    ):
+        if isinstance(exc, kind):
+            code = value
+    return {"success": False, "error": str(exc), "code": code}
+
+
+def _target_preview(target_set, limit=50):
+    from apps.marvins.labels import labels_as_dict
+    from apps.marvins.models import Marvin
+
+    ids = [str(value) for value in target_set.snapshot]
+    marvins = {
+        str(m.id): m
+        for m in Marvin.objects.filter(organization=target_set.organization, id__in=ids[:limit])
+    }
+    return {
+        "success": True,
+        "target_set_id": str(target_set.id),
+        "capability": target_set.capability.name,
+        "matched_count": len(ids),
+        "selector": target_set.selector,
+        "metadata": target_set.snapshot_metadata or {},
+        "targets": [
+            {
+                "id": mid,
+                "name": marvins[mid].name,
+                "host_metadata": {
+                    key: getattr(marvins[mid], key)
+                    for key in ("hostname", "client_id", "provider", "region", "availability_zone")
+                },
+                "labels": labels_as_dict(marvins[mid].labels),
+            }
+            for mid in ids[:limit]
+            if mid in marvins
+        ],
+    }
+
+
+def _find_targets(org, capability_name, selector=None, session_scope=None, limit=50):
+    from apps.marvins.discovery import DiscoveryEngine, DiscoveryError
+
+    try:
+        effective = _target_selector(selector=selector, session_scope=session_scope)
+        target_set = DiscoveryEngine().resolve_targets(org, capability_name, effective)
+        return _target_preview(target_set, max(1, min(limit, 100)))
+    except (ValueError, DiscoveryError) as exc:
+        return _targeting_error(exc)
+
+
 def _find_tools(
-    organization_id, query=None, labels=None, limit=10, capability_name=None, filters=None
+    organization_id,
+    query=None,
+    labels=None,
+    limit=10,
+    capability_name=None,
+    filters=None,
+    selector=None,
+    session_scope=None,
 ):
     _setup_django_models()
-
     from apps.core.models import Organization
-    from apps.marvins.discovery import CapabilityDiscoveryError, resolve_capabilities
+    from apps.marvins.discovery import DiscoveryEngine, DiscoveryError
 
     org = Organization.objects.get(id=organization_id)
     try:
-        response = resolve_capabilities(
+        response = DiscoveryEngine().find_capabilities(
             org,
             query=query,
-            labels=labels,
+            selector=_target_selector(labels, selector, session_scope),
             limit=limit,
             capability_name=capability_name,
             filters=filters,
         )
-    except CapabilityDiscoveryError as exc:
-        return {"error": str(exc)}
+    except (ValueError, DiscoveryError) as exc:
+        return _targeting_error(exc)
     capabilities = response.get("results", response)
     for capability in capabilities:
         if "online_count" in capability and "online_marvins" not in capability:
@@ -902,75 +1006,61 @@ def _find_tools(
 def _route_and_execute(org, thread, args):
     _setup_django_models()
 
-    from apps.marvins.discovery import BudgetExceeded, DiscoveryEngine, DiscoveryError
-    from apps.marvins.labels import LabelSelectorError, parse_label_selector
+    from apps.marvins.discovery import DiscoveryEngine, DiscoveryError
     from apps.marvins.models import Marvin
-    from apps.marvins.selectors import TargetSelector
     from apps.sessions.models import ToolCall
-    from services.temporal_workers import fanout
 
     capability_name = args.get("capability_name") or args.get("capability")
-    selector_str = args.get("selector") or args.get("labels")
     timeout = args.get("timeout_seconds") or args.get("timeout", 300)
 
-    selector = None
     try:
-        if isinstance(selector_str, dict):
-            selector = TargetSelector.from_dict(selector_str)
-        elif selector_str:
-            selector = TargetSelector.from_dict({"labels": parse_label_selector(selector_str)})
-    except LabelSelectorError as exc:
-        return (
-            None,
-            [],
-            {"error": str(exc)},
-        )
+        selector = _target_selector(args.get("labels"), args.get("selector"))
+        expected = args.get("expected_target_count")
+        if expected is not None and (type(expected) is not int or expected < 1):
+            raise ValueError("expected_target_count must be an integer >= 1")
+    except ValueError as exc:
+        return None, [], _targeting_error(exc)
 
     from apps.sessions.budget import release_execution_budget
 
     engine = DiscoveryEngine()
     target_set = None
     try:
-        target_set, capability, marvin_ids, policy_snapshot = fanout.resolve_targets(
-            engine,
+        target_set = engine.resolve_targets(
             org,
             capability_name,
             selector=selector,
-            target_scope=thread.tsession.target_scope,
-            session=thread.tsession,
+            session_scope=thread.tsession.target_scope,
         )
         snapshot = cast(list[str], target_set.snapshot)
-    except BudgetExceeded as exc:
-        return (
-            None,
-            [],
-            {"error": (f"Execution budget exceeded for capability '{capability_name}': {exc}")},
+        if not snapshot or (expected is not None and len(snapshot) != expected):
+            return (
+                None,
+                [],
+                {
+                    "error": (
+                        "Target count does not match expectation"
+                        if snapshot
+                        else "No matching target"
+                    ),
+                    "code": "target_count_mismatch" if snapshot else "no_matching_target",
+                    "matched_count": len(snapshot),
+                    "selector": target_set.selector,
+                    "metadata": target_set.snapshot_metadata,
+                },
+            )
+        capability = target_set.capability
+        policy, _budget = engine.check_execution_policy(
+            org,
+            capability,
+            len(snapshot),
+            session=thread.tsession,
         )
-    except DiscoveryError as exc:
-        return (
-            None,
-            [],
-            {
-                "error": (
-                    f"No online Marvin found for capability '{capability_name}' "
-                    f"with matching labels: {exc}"
-                )
-            },
-        )
-
-    snapshot = cast(list[str], target_set.snapshot)
-    if not snapshot:
-        release_execution_budget(thread.tsession, len(snapshot))
-        return (
-            None,
-            [],
-            {
-                "error": (
-                    f"No online Marvin found for capability '{capability_name}' "
-                    "with matching labels"
-                )
-            },
-        )
+        marvin_ids = [str(value) for value in snapshot]
+        policy_snapshot = policy.model_dump()
+        snapshot = cast(list[str], target_set.snapshot)
+    except (DiscoveryError, ValueError) as exc:
+        return None, [], _targeting_error(exc)
 
     try:
         marvins = list(Marvin.objects.filter(id__in=snapshot, organization=org))
@@ -982,14 +1072,13 @@ def _route_and_execute(org, thread, args):
                 [],
                 {"error": "Resolved target set did not contain available Marvin executors"},
             )
-        labels_dict = parse_label_selector(selector_str) if isinstance(selector_str, str) else {}
         execution_mode = "fanout" if len(marvin_ids) > 1 else "single"
 
         tool_call = ToolCall.objects.create(
             thread=thread,
             capability=capability,
             parameters=args.get("parameters", {}),
-            labels=labels_dict,
+            labels=target_set.selector,
             marvin=marvins_by_id.get(marvin_ids[0]),
             timeout_seconds=timeout,
             status=ToolCall.Status.IN_PROGRESS,

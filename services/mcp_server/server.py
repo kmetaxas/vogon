@@ -25,16 +25,16 @@ from apps.marvins.discovery import (
     CapabilityDiscoveryError,
     CapabilityNotFound,
     DiscoveryEngine,
+    DiscoveryError,
     FanOutLimitExceeded,
     SelectorRequiresResource,
-    resolve_capabilities,
 )
-from apps.marvins.labels import LabelSelectorError, parse_label_selector
+from apps.marvins.labels import LabelSelectorError, labels_as_dict
 from apps.marvins.models import Capability, Marvin, ResolvedTargetSet
 from apps.marvins.policies import ExecutionPolicy
-from apps.marvins.selectors import TargetSelector
 from apps.sessions.models import Thread, ToolCall, TSession
 from services.mcp_server.auth import MCPAuthError, validate_mcp_token
+from services.temporal_workers.activities import _target_selector, _targeting_error
 from services.temporal_workers.client import get_temporal_client
 from services.temporal_workers.workflows import CapabilityExecutionWorkflow
 
@@ -80,14 +80,7 @@ def _unauthorized_error(error: MCPAuthError) -> dict:
 
 def _marvin_preview(marvin: Marvin) -> dict:
     """Build a Marvin preview dict for the LLM/MCP, keeping metadata and labels separate."""
-    labels_dict: dict[str, str | None] = {}
-    marvin_labels: list[str] = marvin.labels or []
-    for label in marvin_labels:
-        if ":" in label:
-            k, v = label.split(":", 1)
-            labels_dict[k.strip()] = v.strip()
-        else:
-            labels_dict[label.strip()] = None
+    labels_dict = labels_as_dict(marvin.labels)
     return {
         "id": str(marvin.id),
         "name": marvin.name,
@@ -154,6 +147,7 @@ async def find_tools(
     limit: int = 10,
     capability_name: str = None,
     filters: dict = None,
+    selector: dict = None,
 ) -> list | dict:
     """Find executable capabilities backed by online Marvins.
 
@@ -173,16 +167,18 @@ async def find_tools(
         org = validate_mcp_token(api_token, organization_slug)
         from asgiref.sync import sync_to_async
 
-        return await sync_to_async(resolve_capabilities)(
+        return await sync_to_async(DiscoveryEngine().find_capabilities)(
             org,
             query=query,
-            labels=labels,
+            selector=_target_selector(labels, selector),
             limit=limit,
             capability_name=capability_name,
             filters=filters,
         )
-    except CapabilityDiscoveryError as e:
+    except LabelSelectorError as e:
         return {"success": False, "error": str(e), "code": "invalid_label_selector"}
+    except (CapabilityDiscoveryError, ValueError) as e:
+        return _targeting_error(e)
     except MCPAuthError as e:
         return _unauthorized_error(e)
     except Exception as e:
@@ -202,19 +198,28 @@ async def find_targets(
     try:
         org = validate_mcp_token(api_token, organization_slug)
         capability = Capability.objects.get(organization=org, name=capability_name, enabled=True)
-        target_selector = TargetSelector.from_dict(selector) if selector else None
+        target_selector = _target_selector(selector=selector)
+        if type(limit) is not int or limit < 1:
+            raise ValueError("limit must be an integer >= 1")
+        limit = min(limit, 100)
         target_set = DiscoveryEngine().resolve_targets(org, capability, target_selector)
         return _target_set_preview(target_set, limit)
     except MCPAuthError as e:
         return _unauthorized_error(e)
     except Capability.DoesNotExist:
-        return {"success": False, "error": "Capability not found or disabled"}
+        return {
+            "success": False,
+            "error": "Capability not found or disabled",
+            "code": "capability_not_found",
+        }
     except SelectorRequiresResource as e:
         return {"success": False, "error": str(e), "code": "selector_requires_resource"}
     except FanOutLimitExceeded as e:
         return {"success": False, "error": str(e), "code": "fanout_limit_exceeded"}
     except CapabilityNotFound as e:
         return {"success": False, "error": str(e), "code": "capability_not_found"}
+    except ValueError as e:
+        return _targeting_error(e)
     except Exception as e:
         logger.error(f"Error resolving targets: {e}")
         return {"success": False, "error": str(e)}
@@ -232,6 +237,8 @@ async def execute(
     timeout_seconds: int = None,
     session_id: str = None,
     thread_id: str = None,
+    selector: dict = None,
+    expected_target_count: int = None,
 ) -> dict:
     """Execute a capability on a Marvin agent.
 
@@ -249,11 +256,36 @@ async def execute(
     """
     try:
         org = validate_mcp_token(api_token, organization_slug)
+        requested_selector = _target_selector(labels, selector)
+        if target_set_id and (labels is not None or selector is not None):
+            raise ValueError("target_set_id cannot be combined with labels or selector")
+        if expected_target_count is not None and (
+            type(expected_target_count) is not int or expected_target_count < 1
+        ):
+            raise ValueError("expected_target_count must be an integer >= 1")
         capability = Capability.objects.get(
             organization=org,
             name=capability_name,
             enabled=True,
         )
+
+        session = None
+        if session_id:
+            session = TSession.objects.get(id=session_id, organization=org)
+        if thread_id:
+            existing_thread = Thread.objects.select_related("tsession").get(
+                id=thread_id,
+                tsession__organization=org,
+            )
+            if session and existing_thread.tsession_id != session.id:
+                raise ValueError("Thread does not belong to the requested session")
+            session = existing_thread.tsession
+            session_id = str(session.id)
+        if session:
+            requested_selector = _target_selector(
+                selector=requested_selector.to_dict(),
+                session_scope=session.target_scope,
+            )
 
         if target_set_id:
             try:
@@ -263,6 +295,11 @@ async def execute(
                     "success": False,
                     "error": "Target set not found, outside organization, or expired",
                 }
+            if session and session.target_scope:
+                scoped = DiscoveryEngine().resolve_targets(org, capability, requested_selector)
+                allowed = {str(value) for value in scoped.snapshot}
+                if not all(str(value) in allowed for value in target_set.snapshot):
+                    raise ValueError("Target set exceeds session scope")
             if target_set.capability_id != capability.id:
                 return {"success": False, "error": "Target set capability does not match request"}
         else:
@@ -270,7 +307,7 @@ async def execute(
                 target_set = DiscoveryEngine().resolve_targets(
                     org,
                     capability,
-                    TargetSelector(labels=parse_label_selector(labels)) if labels else None,
+                    requested_selector,
                 )
             except SelectorRequiresResource as e:
                 return {"success": False, "error": str(e), "code": "selector_requires_resource"}
@@ -279,7 +316,22 @@ async def execute(
 
         marvin_ids = [str(marvin_id) for marvin_id in cast(list[Any], target_set.snapshot)]
         if not marvin_ids:
-            return {"success": False, "error": "No online Marvin found for this capability"}
+            return {
+                "success": False,
+                "error": "No matching target",
+                "code": "no_matching_target",
+                "selector": target_set.selector,
+                "metadata": target_set.snapshot_metadata,
+            }
+        if expected_target_count is not None and len(marvin_ids) != expected_target_count:
+            return {
+                "success": False,
+                "error": "Target count does not match expectation",
+                "code": "target_count_mismatch",
+                "matched_count": len(marvin_ids),
+                "selector": target_set.selector,
+                "metadata": target_set.snapshot_metadata,
+            }
 
         primary_marvin = Marvin.objects.filter(organization=org, id=marvin_ids[0]).first()
 
@@ -298,7 +350,11 @@ async def execute(
             )
             thread_id = str(thread.id)
 
-        thread = Thread.objects.get(id=thread_id, tsession_id=session_id)
+        thread = Thread.objects.get(
+            id=thread_id,
+            tsession_id=session_id,
+            tsession__organization=org,
+        )
         policy = ExecutionPolicy.from_capability(capability)
         tool_call = ToolCall.objects.create(
             thread=thread,
@@ -360,10 +416,16 @@ async def execute(
 
     except LabelSelectorError as e:
         return {"success": False, "error": str(e), "code": "invalid_label_selector"}
+    except (ValueError, DiscoveryError) as e:
+        return _targeting_error(e)
     except MCPAuthError as e:
         return _unauthorized_error(e)
     except Capability.DoesNotExist:
-        return {"success": False, "error": "Capability not found or disabled"}
+        return {
+            "success": False,
+            "error": "Capability not found or disabled",
+            "code": "capability_not_found",
+        }
     except Exception as e:
         logger.error(f"Error executing capability: {e}")
         return {"success": False, "error": str(e)}
@@ -381,6 +443,8 @@ async def execute_tool(
     timeout_seconds: int = None,
     session_id: str = None,
     thread_id: str = None,
+    selector: dict = None,
+    expected_target_count: int = None,
 ) -> dict:
     return await execute(
         api_token=api_token,
@@ -392,6 +456,8 @@ async def execute_tool(
         timeout_seconds=timeout_seconds,
         session_id=session_id,
         thread_id=thread_id,
+        selector=selector,
+        expected_target_count=expected_target_count,
     )
 
 

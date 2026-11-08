@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 _active_servicer: Any = None
 
 
+class RegistrationRejectedError(ValueError):
+    """Registration cannot be accepted without violating agent ownership."""
+
+
 def get_servicer() -> Any:
     return _active_servicer
 
@@ -145,14 +149,31 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                         yield rejected_msg
                         break
 
-                    stream = MarvinStream(agent_id)
-                    async with self._lock:
-                        self.marvins[agent_id] = stream
-                    stream.connected = True
-                    stream.last_seen = datetime.now(UTC)
-                    logger.info(f"Marvin {agent_id} connected")
+                    from apps.marvins.labels import LabelSelectorError
 
-                    await self._handle_register(agent_id, message.register, org)
+                    rejection_reason = None
+                    # Serialize ONLINE persistence and stream publication with old-stream
+                    # OFFLINE cleanup. Never release the lock between those two operations.
+                    async with self._lock:
+                        try:
+                            await self._handle_register(agent_id, message.register, org)
+                        except (RegistrationRejectedError, LabelSelectorError) as exc:
+                            rejection_reason = str(exc)
+                        else:
+                            stream = MarvinStream(agent_id)
+                            stream.connected = True
+                            self.marvins[agent_id] = stream
+
+                    if rejection_reason is not None:
+                        yield marvin_pb2.ControlMessage(
+                            command_id=str(uuid.uuid4()),
+                            registration_rejected=marvin_pb2.RegistrationRejected(
+                                reason=rejection_reason, permanent=True
+                            ),
+                        )
+                        break
+
+                    logger.info(f"Marvin {agent_id} connected")
 
                     # Assemble effective config for the agent
                     from apps.marvins.config_assembly import assemble_marvin_config
@@ -242,7 +263,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                     # by an old handler's finally block.
                     if self.marvins.get(agent_id) is stream:
                         self.marvins.pop(agent_id, None)
-                await self._update_marvin_status(agent_id, "offline")
+                        await self._update_marvin_status(agent_id, "offline")
                 logger.info(f"Marvin {agent_id} disconnected")
 
     async def _handle_register(self, agent_id: str, register: marvin_pb2.Register, organization):
@@ -307,9 +328,13 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
 
         django.setup()
 
+        from apps.marvins.labels import normalize_labels
         from apps.marvins.models import Capability, Marvin
 
         host = register.host
+        # Registration is a full snapshot: reconnect replaces labels, including clearing them.
+        # Validate before creating an agent or changing any persisted metadata/capabilities.
+        labels = normalize_labels(register.labels)
 
         try:
             marvin = Marvin.objects.get(client_id=agent_id)
@@ -318,7 +343,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
                     f"Marvin {agent_id} belongs to {marvin.organization_id}; "
                     f"ignoring registration for {organization.id}"
                 )
-                return []
+                raise RegistrationRejectedError("Agent ID belongs to another organization")
         except Marvin.DoesNotExist:
             marvin = Marvin.objects.create(
                 organization=organization,
@@ -329,7 +354,7 @@ class MarvinServicer(marvin_pb2_grpc.MarvinServiceServicer):
         marvin.status = Marvin.Status.ONLINE
         marvin.last_seen = timezone.now()
         marvin.agent_version = register.agent_version
-        marvin.labels = list(register.labels)
+        marvin.labels = labels
 
         # Host metadata
         marvin.hostname = host.hostname
