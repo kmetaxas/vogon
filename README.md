@@ -39,6 +39,13 @@ Vogon provides a centralized platform for running AI-assisted troubleshooting wo
 
 ## Getting Started
 
+### Reproducible environment (recommended)
+
+Use the [Nix development guide](docs/nix.md) for locked Python dependencies,
+development tools, PostgreSQL/pgvector, and Temporal without Docker. Start with
+`nix develop` after installing Nix and enabling flakes. The manual and Docker
+instructions below are alternative workflows, not the locked Nix environment.
+
 ### Prerequisites
 
 - Python 3.11+ / Django
